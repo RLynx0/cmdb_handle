@@ -151,11 +151,13 @@ enum Term {
 #   A PSCustomObject with `term_type` and `value`.
 #   $null on failure.
 #
+# Throws on inversion without following parentheses.
 # Throws on any unmatched opening parentheses.
 function ParseTerm {
     param ([Ref]$expr)
-    if ($expr.Value -match "^\s*(!|[Nn][Oo][Tt])\s*\(") {
-        ParsePattern $expr "^\s*(!|[Nn][Oo][Tt])" | Out-Null
+    if ($expr.Value -match "^\s*(!|[Nn][Oo][Tt]\s*\()") {
+        [String]$inv = ParsePattern $expr "^\s*(?<val>!|[Nn][Oo][Tt])"
+        if (-not ($expr.Value -match "^\s*\(")) { throw "Expected Parentheses after '$inv'"}
         return [PSCustomObject]@{ term_type = [Term]::Inversion; value = ParseTerm $expr }
     }
     if (ParsePattern $expr "^\s*\(") {
@@ -224,6 +226,21 @@ function ParseTermChain {
     }
 }
 
+# Parses an entire boolean expression into a structured AST.
+#
+# Examples:
+# ```
+# ParseExpression("location ~ RZ%")
+# ParseExpression("age >= 30 AND (name = 'Alice' OR NOT (city = 'Paris'))")
+# ````
+#
+# Arguments:
+#   [String]$string - The input expression to parse.
+#
+# Returns:
+#   A structured PSCustomObject representing the parsed expression.
+#
+# Throws on any syntax errors.
 function ParseExpression {
     param ([String]$string)
     [PSCustomObject]$evaluated = ParseTermChain ([Ref]$string)
