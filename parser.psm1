@@ -9,12 +9,14 @@ using module .\cmdb_handle.psm1
 #
 # Returns:
 #   The extracted value from 'val' capture group.
+#   The whole matched expression if 'val' is not found.
 #   `$null` on failure.
 function ParsePattern {
     param ([Ref]$expr, [Regex]$regx)
     if ($expr.Value -match $regx) {
         $expr.Value = $expr.Value -replace $regx, ""
-        return $Matches["val"]
+        if ($Matches["val"]) { return $Matches["val"] }
+        else { return $Matches[0] }
     } else { return $null }
 }
 
@@ -156,10 +158,10 @@ function ParseTerm {
         ParsePattern $expr "^\s*(!|[Nn][Oo][Tt])" | Out-Null
         return [PSCustomObject]@{ term_type = [Term]::Inversion; value = ParseTerm $expr }
     }
-    if (ParsePattern $expr "^\s*(?<val>\()") {
+    if (ParsePattern $expr "^\s*\(") {
         [PSCustomObject]$inner = ParseTermChain $expr
         if (-not $inner) { throw "Expected Expression inside Parentheses" }
-        if (-not (ParsePattern $expr "^\s*(?<val>\))")) { throw "Found unmatched '('" }
+        if (-not (ParsePattern $expr "^\s*\)")) { throw "Found unmatched '('" }
         return $inner
     }
     [PSCustomObject]$val = ParseComparison $expr
