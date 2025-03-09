@@ -205,10 +205,10 @@ function ParseAndChain {
     param ([Ref]$expr)
     [PSCustomObject]$left = ParseTerm $expr
     if (-not $left) { return $null }
-    [String]$combinator = ParseAnd $expr
+    [PSCustomObject]$combinator = ParseAnd $expr
     if (-not $combinator) { return $left }
     [PSCustomObject]$right = ParseAndChain $expr
-    if (-not $right) { throw "Expected Expression after '$combinator'"}
+    if (-not $right) { throw "Expected Expression after '$($combinator.val)'"}
     return [PSCustomObject]@{
         term_type = [Term]::Combination
         value = [PSCustomObject]@{
@@ -233,10 +233,10 @@ function ParseTermChain {
     param ([Ref]$expr)
     [PSCustomObject]$left = ParseAndChain $expr
     if (-not $left) { return $null }
-    [String]$combinator = ParseOr $expr
+    [PSCustomObject]$combinator = ParseOr $expr
     if (-not $combinator) { return $left }
     [PSCustomObject]$right = ParseTermChain $expr
-    if (-not $right) { throw "Expected Expression after '$combinator'" }
+    if (-not $right) { throw "Expected Expression after '$($combinator.val)'" }
     return [PSCustomObject]@{
         term_type = [Term]::Combination
         value = [PSCustomObject]@{
@@ -330,7 +330,7 @@ function InvertTerm {
                 }
             }
         }
-        ([Term]::Inversion)   { return ResolveInversions $node.value }
+        ([Term]::Inversion) { return ResolveInversions $node.value }
     }
 }
 
