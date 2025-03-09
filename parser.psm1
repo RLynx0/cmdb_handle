@@ -8,15 +8,18 @@ using module .\cmdb_handle.psm1
 #   [Regex]$regx - The regex pattern to match.
 #
 # Returns:
-#   The extracted value from 'val' capture group.
-#   The whole matched expression if 'val' is not found.
+#   A PSCustomObject with `val` and `consumed`
+#   - `val` holds the extracted value from 'val' capture group.
+#   - `consumed` hodls the entire matched expression.
 #   `$null` on failure.
 function ParsePattern {
     param ([Ref]$expr, [Regex]$regx)
     if ($expr.Value -match $regx) {
         $expr.Value = $expr.Value -replace $regx, ""
-        if ($Matches["val"]) { return $Matches["val"] }
-        else { return $Matches[0] }
+        return [PSCustomObject]@{
+            val = $Matches["val"]
+            consumed = $Matches[0]
+        }
     } else { return $null }
 }
 
@@ -27,14 +30,19 @@ function ParsePattern {
 #   [Ref]$expr - The expression being parsed.
 #
 # Returns:
-#   The extracted string value, unescaped.
+#   A PSCustomObject with `val` and `consumed`.
+#   - `val` holds the extracted string value, unescaped.
+#   - `consumed` holds the entire matched expression.
 #   `$null` on failure.
 function ParseString {
     param ([Ref]$expr)
     [String]$plain = "(?<val>(\\.|\s*[^\s`"'!=~<>&|()])+)"
-    [String]$single = "'(?<val>(\\.|[^'])+)'"
-    [String]$double = "`"(?<val>(\\.|[^`"])+)`""
-    return (ParsePattern $expr "^\s*($plain|$single|$double)") -replace "\\(.)", '$1'
+    [String]$single = "'(?<val>(\\.|[^'])*)'"
+    [String]$double = "`"(?<val>(\\.|[^`"])*)`""
+    [PSCustomObject]$str = ParsePattern $expr "^\s*($plain|$single|$double)"
+    if (-not $str) { return $null }
+    $str.val = $str.val -replace "\\(.)", '$1'
+    return $str
 }
 
 # Parses a comparison operator
@@ -51,7 +59,10 @@ function ParseString {
 #   [Ref]$expr - The expression being parsed.
 #
 # Returns:
-#   The extracted operator or `$null` if none is found.
+#   A PSCustomObject with `val` and `consumed`.
+#   - `val` holds the extracted operator.
+#   - `consumed` holds the entire matched expression.
+#   `$null` if no operator is found.
 function ParseOperator {
     param ([Ref]$expr)
     return ParsePattern $expr "^\s*(?<val>(~|==?|!=|<>|<=?|>=?))"
@@ -63,7 +74,10 @@ function ParseOperator {
 #   [Ref]$expr - The expression being parsed.
 #
 # Returns:
-#   The extracted AND combinator or `$null` if none is found.
+#   A PSCustomObject with `val` and `consumed`.
+#   - `val` holds the extracted AND combinator.
+#   - `consumed` holds the entire matched expression.
+#   `$null` if no AND combinator is found.
 function ParseAnd {
     param ([Ref]$expr)
     return ParsePattern $expr "^\s*(?<val>(&{1,2}|[Aa][Nn][Dd]))"
@@ -75,7 +89,10 @@ function ParseAnd {
 #   [Ref]$expr - The expression being parsed.
 #
 # Returns:
-#   The extracted OR combinator or `$null` if none is found.
+#   A PSCustomObject with `val` and `consumed`.
+#   - `val` holds the extracted OR combinator.
+#   - `consumed` holds the entire matched expression.
+#   `$null` if no OR combinator is found.
 function ParseOr {
     param ([Ref]$expr)
     return ParsePattern $expr "^\s*(?<val>(\|{1,2}|[Oo][Rr]))"
@@ -123,15 +140,18 @@ function MapOperator {
 # Returns:
 #   A PSCustomObject with `field`, `value`, and `operator`.
 #   `$null` on failure.
+#
+# Throws on an empty `field` string
 function ParseComparison {
     param ([Ref]$expr)
-    [String]$field = ParseString $expr; if (-not $field) { return $null }
-    [String]$oper = ParseOperator $expr; if (-not $oper) { return $null }
-    [String]$value = ParseString $expr; if (-not $value) { return $null }
+    [PSCustomObject]$field = ParseString $expr; if (-not $field) { return $null }
+    [PSCustomObject]$oper = ParseOperator $expr; if (-not $oper) { return $null }
+    [PSCustomObject]$value = ParseString $expr; if (-not $value) { return $null }
+    if (-not $field.val) { throw "Found Comparison with an empty field" }
     return [PSCustomObject]@{
-        field = $field
-        value = $value
-        operator = (MapOperator $oper)
+        field = $field.val
+        value = $value.val
+        operator = (MapOperator $oper.val)
     }
 }
 
@@ -156,7 +176,7 @@ enum Term {
 function ParseTerm {
     param ([Ref]$expr)
     if ($expr.Value -match "^\s*(!|[Nn][Oo][Tt]\s*\()") {
-        [String]$inv = ParsePattern $expr "^\s*(?<val>!|[Nn][Oo][Tt])"
+        [String]$inv = (ParsePattern $expr "^\s*(?<val>!|[Nn][Oo][Tt])").val
         if (-not ($expr.Value -match "^\s*\(")) { throw "Expected Parentheses after '$inv'"}
         return [PSCustomObject]@{ term_type = [Term]::Inversion; value = ParseTerm $expr }
     }
@@ -245,7 +265,31 @@ function ParseExpression {
     param ([String]$string)
     [PSCustomObject]$evaluated = ParseTermChain ([Ref]$string)
     if (-not $evaluated)  { throw "Expected Expression" }
-    [String]$trail = ParsePattern ([Ref]$string) "^\s*(?<val>\S+)"
-    if ($trail) { throw "Unexpected '$trail' after Expression" }
+    [PSCustomObject]$trail = ParsePattern ([Ref]$string) "^\s*(?<val>\S+)"
+    if ($trail) { throw "Unexpected '$($trail.val)' after Expression" }
     return $evaluated
+}
+
+function RenderExpr {
+    param ([PSCustomObject]$expr)
+    switch ($expr.term_type) {
+        ([Term]::Inversion)   { return "NOT ($(RenderExpr $expr.value))" }
+        ([Term]::Comparison)  {
+            return "$($expr.value.field | ConvertTo-Json) $(switch ($expr.value.operator) {
+                ([CmdbOperator]::Match)              { "~"  }
+                ([CmdbOperator]::IsEqual)            { "==" }
+                ([CmdbOperator]::IsNotEqual)         { "!=" }
+                ([CmdbOperator]::LessThan)           { "<"  }
+                ([CmdbOperator]::LessThanOrEqual)    { "<=" }
+                ([CmdbOperator]::GreaterThan)        { ">"  }
+                ([CmdbOperator]::GreaterThanOrEqual) { ">=" }
+            }) $($expr.value.value | ConvertTo-Json)"
+        }
+        ([Term]::Combination) {
+            return "($(RenderExpr $expr.value.left)) $(switch ($expr.value.combine) {
+                ([CmdbCombine]::And) { "AND" }
+                ([CmdbCombine]::Or)  { "OR" }
+            }) ($(RenderExpr $expr.value.right))"
+        }
+    }
 }
