@@ -270,12 +270,12 @@ function ParseExpression {
     return $evaluated
 }
 
-function RenderExpr {
-    param ([PSCustomObject]$expr)
-    switch ($expr.term_type) {
-        ([Term]::Inversion)   { return "NOT ($(RenderExpr $expr.value))" }
+function RenderAst {
+    param ([PSCustomObject]$node)
+    switch ($node.term_type) {
+        ([Term]::Inversion)   { return "NOT ($(RenderAst $node.value))" }
         ([Term]::Comparison)  {
-            return "$($expr.value.field | ConvertTo-Json) $(switch ($expr.value.operator) {
+            return "$($node.value.field | ConvertTo-Json) $(switch ($node.value.operator) {
                 ([CmdbOperator]::Match)              { "~"  }
                 ([CmdbOperator]::IsEqual)            { "==" }
                 ([CmdbOperator]::IsNotEqual)         { "!=" }
@@ -283,13 +283,71 @@ function RenderExpr {
                 ([CmdbOperator]::LessThanOrEqual)    { "<=" }
                 ([CmdbOperator]::GreaterThan)        { ">"  }
                 ([CmdbOperator]::GreaterThanOrEqual) { ">=" }
-            }) $($expr.value.value | ConvertTo-Json)"
+            }) $($node.value.value | ConvertTo-Json)"
         }
         ([Term]::Combination) {
-            return "($(RenderExpr $expr.value.left)) $(switch ($expr.value.combine) {
+            return "($(RenderAst $node.value.left)) $(switch ($node.value.combine) {
                 ([CmdbCombine]::And) { "AND" }
                 ([CmdbCombine]::Or)  { "OR" }
-            }) ($(RenderExpr $expr.value.right))"
+            }) ($(RenderAst $node.value.right))"
         }
+    }
+}
+
+function InvertTerm {
+    param ([PSCustomObject]$node)
+    switch ($node.term_type) {
+        ([Term]::Comparison)  {
+            [CmdbOperator]$inv_oper = switch ($node.value.operator) {
+                ([CmdbOperator]::Match)              { [CmdbOperator]::IsNotEqual }
+                ([CmdbOperator]::IsEqual)            { [CmdbOperator]::IsNotEqual }
+                ([CmdbOperator]::IsNotEqual)         { [CmdbOperator]::Match }
+                ([CmdbOperator]::LessThan)           { [CmdbOperator]::GreaterThanOrEqual }
+                ([CmdbOperator]::LessThanOrEqual)    { [CmdbOperator]::GreaterThan }
+                ([CmdbOperator]::GreaterThan)        { [CmdbOperator]::LessThanOrEqual }
+                ([CmdbOperator]::GreaterThanOrEqual) { [CmdbOperator]::LessThan }
+            }
+            return [PSCustomObject]@{
+                term_type = [Term]::Comparison
+                value = [PSCustomObject]@{
+                    field = $node.value.field
+                    value = $node.value.value
+                    operator = $inv_oper
+                }
+            }
+        }
+        ([Term]::Combination) {
+            [CmdbCombine]$inv_comb = switch ($node.value.combine) {
+                ([CmdbCombine]::And) { [CmdbCombine]::Or }
+                ([CmdbCombine]::Or) { [CmdbCombine]::And }
+            }
+            return [PSCustomObject]@{
+                term_type = [Term]::Combination
+                value = [PSCustomObject]@{
+                    left = InvertTerm $node.value.left
+                    right = InvertTerm $node.value.right
+                    combine = $inv_comb
+                }
+            }
+        }
+        ([Term]::Inversion)   { return ResolveInversions $node.value }
+    }
+}
+
+function ResolveInversions {
+    param ([PSCustomObject]$node)
+    switch ($node.term_type) {
+        ([Term]::Combination) {
+            return [PSCustomObject]@{
+                term_type = [Term]::Combination
+                value = [PSCustomObject]@{
+                    left = ResolveInversions $node.value.left
+                    right = ResolveInversions $node.value.right
+                    combine = $node.value.combine
+                }
+            }
+        }
+        ([Term]::Inversion)   { return InvertTerm $node.value }
+        ([Term]::Comparison)  { return $node }
     }
 }
