@@ -47,7 +47,8 @@ function ParseString {
 
 # Parses a comparison operator
 # Valid operators are:
-# ~      (Match)
+# ~  =~  (IsMatch)
+# !~     (IsNotMatch)
 # =  ==  (IsEqual)
 # != <>  (IsNotEqual)
 # <      (LessThan)
@@ -65,7 +66,7 @@ function ParseString {
 #   `$null` if no operator is found.
 function ParseOperator {
     param ([Ref]$expr)
-    return ParsePattern $expr "^\s*(?<val>(~|==?|!=|<>|<=?|>=?))"
+    return ParsePattern $expr "^\s*(?<val>(=?~|!~|==?|!=|<>|<=?|>=?))"
 }
 
 # Parses an AND combinator (&&, & or "AND").
@@ -100,7 +101,8 @@ function ParseOr {
 
 # Maps a parsed operator string to a [CmdbOperator] enum value.
 # Valid operators are:
-# ~      (Match)
+# ~  =~  (IsMatch)
+# !~     (IsNotMatch)
 # =  ==  (IsEqual)
 # != <>  (IsNotEqual)
 # <      (LessThan)
@@ -118,7 +120,9 @@ function ParseOr {
 function MapOperator {
     param ([String]$op_str)
     switch ($op_str) {
-        ("~")   { return [CmdbOperator]::Match }
+        ("~")   { return [CmdbOperator]::IsMatch }
+        ("=~")  { return [CmdbOperator]::IsMatch }
+        ("!~")  { return [CmdbOperator]::IsNotMatch }
         ("=")   { return [CmdbOperator]::IsEqual }
         ("==")  { return [CmdbOperator]::IsEqual }
         ("!=")  { return [CmdbOperator]::IsNotEqual }
@@ -276,7 +280,8 @@ function RenderAst {
         ([Term]::Inversion)   { return "NOT ($(RenderAst $node.value))" }
         ([Term]::Comparison)  {
             return "$($node.value.field | ConvertTo-Json) $(switch ($node.value.operator) {
-                ([CmdbOperator]::Match)              { "~"  }
+                ([CmdbOperator]::IsMatch)            { "=~" }
+                ([CmdbOperator]::IsNotMatch)         { "!~" }
                 ([CmdbOperator]::IsEqual)            { "==" }
                 ([CmdbOperator]::IsNotEqual)         { "!=" }
                 ([CmdbOperator]::LessThan)           { "<"  }
@@ -299,9 +304,10 @@ function InvertTerm {
     switch ($node.term_type) {
         ([Term]::Comparison)  {
             [CmdbOperator]$inv_oper = switch ($node.value.operator) {
-                ([CmdbOperator]::Match)              { [CmdbOperator]::IsNotEqual }
+                ([CmdbOperator]::IsMatch)            { [CmdbOperator]::IsNotMatch }
+                ([CmdbOperator]::IsNotMatch)         { [CmdbOperator]::IsMatch }
                 ([CmdbOperator]::IsEqual)            { [CmdbOperator]::IsNotEqual }
-                ([CmdbOperator]::IsNotEqual)         { [CmdbOperator]::Match }
+                ([CmdbOperator]::IsNotEqual)         { [CmdbOperator]::IsEqual }
                 ([CmdbOperator]::LessThan)           { [CmdbOperator]::GreaterThanOrEqual }
                 ([CmdbOperator]::LessThanOrEqual)    { [CmdbOperator]::GreaterThan }
                 ([CmdbOperator]::GreaterThan)        { [CmdbOperator]::LessThanOrEqual }
@@ -321,28 +327,29 @@ function InvertTerm {
                 ([CmdbCombine]::And) { [CmdbCombine]::Or }
                 ([CmdbCombine]::Or) { [CmdbCombine]::And }
             }
+            [PSCustomObject]$inv_val = [PSCustomObject]@{
+                left = InvertTerm $node.value.left
+                right = InvertTerm $node.value.right
+                combine = $inv_comb
+            }
             return [PSCustomObject]@{
                 term_type = [Term]::Combination
-                value = [PSCustomObject]@{
-                    left = InvertTerm $node.value.left
-                    right = InvertTerm $node.value.right
-                    combine = $inv_comb
-                }
+                value = NormalizeAst $inv_val
             }
         }
-        ([Term]::Inversion) { return ResolveInversions $node.value }
+        ([Term]::Inversion) { return NormalizeAst $node.value }
     }
 }
 
-function ResolveInversions {
+function NormalizeAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
         ([Term]::Combination) {
             return [PSCustomObject]@{
                 term_type = [Term]::Combination
                 value = [PSCustomObject]@{
-                    left = ResolveInversions $node.value.left
-                    right = ResolveInversions $node.value.right
+                    left = NormalizeAst $node.value.left
+                    right = NormalizeAst $node.value.right
                     combine = $node.value.combine
                 }
             }

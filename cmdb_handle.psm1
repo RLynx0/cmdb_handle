@@ -1,5 +1,6 @@
 enum CmdbOperator {
-    Match
+    IsMatch
+    IsNotMatch
     IsEqual
     IsNotEqual
     LessThan
