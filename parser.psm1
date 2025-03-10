@@ -1,5 +1,9 @@
 using module .\cmdb_handle.psm1
 
+###################
+# SECTION PARSING #
+###################
+
 # Parses a regex pattern
 # Extracts the named capture group 'val'.
 #
@@ -164,6 +168,7 @@ enum Term {
     Combination
     FlatCombination
     Inversion
+    Boolean
 }
 
 # Parses a term, which can be a comparison, an inversion,
@@ -275,6 +280,11 @@ function ParseExpression {
     return $evaluated
 }
 
+
+######################
+# SECTION EVALUATION #
+######################
+
 function InvertTerm {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
@@ -303,16 +313,29 @@ function InvertTerm {
                 ([CmdbCombine]::And) { [CmdbCombine]::Or }
                 ([CmdbCombine]::Or) { [CmdbCombine]::And }
             }
-            [PSCustomObject]$inv_val = [PSCustomObject]@{
-                left = InvertTerm $node.value.left
-                right = InvertTerm $node.value.right
-                combine = $inv_comb
-            }
-            return [PSCustomObject]@{
+            [PSCustomObject]$inv_term = [PSCustomObject]@{
                 term_type = [Term]::Combination
-                value = NormalizeAst $inv_val
-            }
+                value = [PSCustomObject]@{
+                    left = InvertTerm $node.value.left
+                    right = InvertTerm $node.value.right
+                    combine = $inv_comb
+                }
+            }; return NormalizeAst $inv_term
         }
+        ([Term]::FlatCombination) {
+            [CmdbCombine]$inv_comb = switch ($node.value.combine) {
+                ([CmdbCombine]::And) { [CmdbCombine]::Or }
+                ([CmdbCombine]::Or) { [CmdbCombine]::And }
+            }
+            [PSCustomObject]$inv_term = [PSCustomObject]@{
+                term_type = [Term]::FlatCombination
+                value = [PSCustomObject]@{
+                    terms = @($node.value.terms | ForEach-Object { InvertTerm $_ })
+                    combine = $inv_comb
+                }
+            }; return NormalizeAst $inv_term
+        }
+        ([Term]::Boolean) { $node.value = -not $node.value; return $node }
         ([Term]::Inversion) { return NormalizeAst $node.value }
     }
 }
@@ -359,8 +382,8 @@ function NormalizeAst {
             [Bool]$distribute = $combine -eq [CmdbCombine]::And
             [Bool]$left_comb = $left.term_type -eq [Term]::Combination
             [Bool]$right_comb = $right.term_type -eq [Term]::Combination
-            [Bool]$distribute_left = $distribute -and $right_comb -and $right.value.combine -eq [CmdbCombine]::Or
-            [Bool]$distribute_right = $distribute -and $left_comb -and $left.value.combine -eq [CmdbCombine]::Or
+            [Bool]$distribute_left = $distribute -and $right_comb -and $right.value.combine -ne $combine
+            [Bool]$distribute_right = $distribute -and $left_comb -and $left.value.combine -ne $combine
             if ($distribute_right) { return DistributeTerm -term $right -into $left -combine $combine }
             if ($distribute_left)  { return DistributeTerm -term $left -into $right -combine $combine }
             return [PSCustomObject]@{
@@ -373,6 +396,7 @@ function NormalizeAst {
         }
         ([Term]::Inversion)   { return InvertTerm $node.value }
         ([Term]::Comparison)  { return $node }
+        ([Term]::Boolean)     { return $node }
     }
 }
 
