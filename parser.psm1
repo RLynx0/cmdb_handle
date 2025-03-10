@@ -341,16 +341,57 @@ function InvertTerm {
     }
 }
 
+function DistributeTerm {
+    param (
+        [PSCustomObject]$term,
+        [PSCustomObject]$into,
+        [CmdbCombine]$combine
+    )
+    [PSCustomObject]$new_left = [PSCustomObject]@{
+        term_type = [Term]::Combination
+        value = [PSCustomObject]@{
+            left = $into.value.left
+            right = $term
+            combine = $combine
+        }
+    }
+    [PSCustomObject]$new_right = [PSCustomObject]@{
+        term_type = [Term]::Combination
+        value = [PSCustomObject]@{
+            left = $into.value.right
+            right = $term
+            combine = $combine
+        }
+    }
+    return [PSCustomObject]@{
+        term_type = [Term]::Combination
+        value = [PSCustomObject]@{
+            left = NormalizeAst $new_left
+            right = NormalizeAst $new_right
+            combine = $into.value.combine
+        }
+    }
+}
+
 function NormalizeAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
         ([Term]::Combination) {
+            [PSCustomObject]$left = NormalizeAst $node.value.left
+            [PSCustomObject]$right = NormalizeAst $node.value.right
+            [CmdbCombine]$combine = $node.value.combine
+            [Bool]$distribute = $combine -eq [CmdbCombine]::And
+            [Bool]$left_comb = $left.term_type -eq [Term]::Combination
+            [Bool]$right_comb = $right.term_type -eq [Term]::Combination
+            [Bool]$distribute_left = $distribute -and $right_comb -and $right.value.combine -eq [CmdbCombine]::Or
+            [Bool]$distribute_right = $distribute -and $left_comb -and $left.value.combine -eq [CmdbCombine]::Or
+            if ($distribute_right) { return DistributeTerm -term $right -into $left -combine $combine }
+            if ($distribute_left)  { return DistributeTerm -term $left -into $right -combine $combine }
             return [PSCustomObject]@{
                 term_type = [Term]::Combination
                 value = [PSCustomObject]@{
-                    left = NormalizeAst $node.value.left
-                    right = NormalizeAst $node.value.right
-                    combine = $node.value.combine
+                    left = $left; right = $right
+                    combine = $combine
                 }
             }
         }
