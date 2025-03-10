@@ -162,6 +162,7 @@ function ParseComparison {
 enum Term {
     Comparsion
     Combination
+    FlatCombination
     Inversion
 }
 
@@ -274,31 +275,6 @@ function ParseExpression {
     return $evaluated
 }
 
-function RenderAst {
-    param ([PSCustomObject]$node)
-    switch ($node.term_type) {
-        ([Term]::Inversion)   { return "NOT ($(RenderAst $node.value))" }
-        ([Term]::Comparison)  {
-            return "$($node.value.field | ConvertTo-Json) $(switch ($node.value.operator) {
-                ([CmdbOperator]::IsMatch)            { "=~" }
-                ([CmdbOperator]::IsNotMatch)         { "!~" }
-                ([CmdbOperator]::IsEqual)            { "==" }
-                ([CmdbOperator]::IsNotEqual)         { "!=" }
-                ([CmdbOperator]::LessThan)           { "<"  }
-                ([CmdbOperator]::LessThanOrEqual)    { "<=" }
-                ([CmdbOperator]::GreaterThan)        { ">"  }
-                ([CmdbOperator]::GreaterThanOrEqual) { ">=" }
-            }) $($node.value.value | ConvertTo-Json)"
-        }
-        ([Term]::Combination) {
-            return "($(RenderAst $node.value.left)) $(switch ($node.value.combine) {
-                ([CmdbCombine]::And) { "AND" }
-                ([CmdbCombine]::Or)  { "OR" }
-            }) ($(RenderAst $node.value.right))"
-        }
-    }
-}
-
 function InvertTerm {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
@@ -397,5 +373,68 @@ function NormalizeAst {
         }
         ([Term]::Inversion)   { return InvertTerm $node.value }
         ([Term]::Comparison)  { return $node }
+    }
+}
+
+function FlattenAst {
+    param([PSCustomObject]$node)
+    switch ($node.term_type) {
+        ([Term]::Combination) {
+            [PSCustomObject[]]$terms = @(
+                FlattenAst $node.value.left  
+                FlattenAst $node.value.right  
+            ) | ForEach-Object {
+                if ($_.term_type -eq [Term]::FlatCombination -and `
+                    $_.value.combine -eq $node.value.combine
+                ) { $_.value.terms } else { $_ }
+            }
+            return [PSCustomObject]@{
+                term_type = [Term]::FlatCombination
+                value = [PSCustomObject]@{
+                    terms = $terms
+                    combine = $node.value.combine
+                }
+            }
+        }
+        ([Term]::Inversion)   {
+            $node.value = FlattenAst $node.value
+            return $node
+        }
+        ([Term]::Comparison)  { return $node }
+        ([Term]::FlatCombination)  { return $node }
+    }
+}
+
+function RenderAst {
+    param ([PSCustomObject]$node)
+    switch ($node.term_type) {
+        ([Term]::Inversion)   { return "NOT ($(RenderAst $node.value))" }
+        ([Term]::Comparison)  {
+            return "$($node.value.field | ConvertTo-Json) $(switch ($node.value.operator) {
+                ([CmdbOperator]::IsMatch)            { "=~" }
+                ([CmdbOperator]::IsNotMatch)         { "!~" }
+                ([CmdbOperator]::IsEqual)            { "==" }
+                ([CmdbOperator]::IsNotEqual)         { "!=" }
+                ([CmdbOperator]::LessThan)           { "<"  }
+                ([CmdbOperator]::LessThanOrEqual)    { "<=" }
+                ([CmdbOperator]::GreaterThan)        { ">"  }
+                ([CmdbOperator]::GreaterThanOrEqual) { ">=" }
+            }) $($node.value.value | ConvertTo-Json)"
+        }
+        ([Term]::Combination) {
+            return "($(RenderAst $node.value.left)) $(switch ($node.value.combine) {
+                ([CmdbCombine]::And) { "AND" }
+                ([CmdbCombine]::Or)  { "OR" }
+            }) ($(RenderAst $node.value.right))"
+        }
+        ([Term]::FlatCombination) {
+            [String]$combine = switch ($node.value.combine) {
+                ([CmdbCombine]::And) { " AND " }
+                ([CmdbCombine]::Or)  { " OR " }
+            }
+            return "($(($node.value.terms | ForEach-Object {
+                RenderAst $_
+            }) -join $combine))"
+        }
     }
 }
