@@ -285,118 +285,11 @@ function ParseExpression {
 # SECTION EVALUATION #
 ######################
 
-function InvertTerm {
-    param ([PSCustomObject]$node)
-    switch ($node.term_type) {
-        ([Term]::Comparison)  {
-            [CmdbOperator]$inv_oper = switch ($node.value.operator) {
-                ([CmdbOperator]::IsMatch)            { [CmdbOperator]::IsNotMatch }
-                ([CmdbOperator]::IsNotMatch)         { [CmdbOperator]::IsMatch }
-                ([CmdbOperator]::IsEqual)            { [CmdbOperator]::IsNotEqual }
-                ([CmdbOperator]::IsNotEqual)         { [CmdbOperator]::IsEqual }
-                ([CmdbOperator]::LessThan)           { [CmdbOperator]::GreaterThanOrEqual }
-                ([CmdbOperator]::LessThanOrEqual)    { [CmdbOperator]::GreaterThan }
-                ([CmdbOperator]::GreaterThan)        { [CmdbOperator]::LessThanOrEqual }
-                ([CmdbOperator]::GreaterThanOrEqual) { [CmdbOperator]::LessThan }
-            }
-            return [PSCustomObject]@{
-                term_type = [Term]::Comparison
-                value = [PSCustomObject]@{
-                    field = $node.value.field
-                    value = $node.value.value
-                    operator = $inv_oper
-                }
-            }
-        }
-        ([Term]::Combination) {
-            [CmdbCombine]$inv_comb = switch ($node.value.combine) {
-                ([CmdbCombine]::And) { [CmdbCombine]::Or }
-                ([CmdbCombine]::Or) { [CmdbCombine]::And }
-            }
-            [PSCustomObject]$inv_term = [PSCustomObject]@{
-                term_type = [Term]::Combination
-                value = [PSCustomObject]@{
-                    left = InvertTerm $node.value.left
-                    right = InvertTerm $node.value.right
-                    combine = $inv_comb
-                }
-            }; return NormalizeAst $inv_term
-        }
-        ([Term]::FlatCombination) {
-            [CmdbCombine]$inv_comb = switch ($node.value.combine) {
-                ([CmdbCombine]::And) { [CmdbCombine]::Or }
-                ([CmdbCombine]::Or) { [CmdbCombine]::And }
-            }
-            [PSCustomObject]$inv_term = [PSCustomObject]@{
-                term_type = [Term]::FlatCombination
-                value = [PSCustomObject]@{
-                    terms = @($node.value.terms | ForEach-Object { InvertTerm $_ })
-                    combine = $inv_comb
-                }
-            }; return NormalizeAst $inv_term
-        }
-        ([Term]::Boolean) { $node.value = -not $node.value; return $node }
-        ([Term]::Inversion) { return NormalizeAst $node.value }
-    }
-}
-
-function DistributeTerm {
-    param (
-        [PSCustomObject]$term,
-        [PSCustomObject]$into,
-        [CmdbCombine]$combine
-    )
-    [PSCustomObject]$new_left = [PSCustomObject]@{
-        term_type = [Term]::Combination
-        value = [PSCustomObject]@{
-            left = $into.value.left
-            right = $term
-            combine = $combine
-        }
-    }
-    [PSCustomObject]$new_right = [PSCustomObject]@{
-        term_type = [Term]::Combination
-        value = [PSCustomObject]@{
-            left = $into.value.right
-            right = $term
-            combine = $combine
-        }
-    }
+function BoolTerm {
+    param([Bool]$value)
     return [PSCustomObject]@{
-        term_type = [Term]::Combination
-        value = [PSCustomObject]@{
-            left = NormalizeAst $new_left
-            right = NormalizeAst $new_right
-            combine = $into.value.combine
-        }
-    }
-}
-
-function NormalizeAst {
-    param ([PSCustomObject]$node)
-    switch ($node.term_type) {
-        ([Term]::Combination) {
-            [PSCustomObject]$left = NormalizeAst $node.value.left
-            [PSCustomObject]$right = NormalizeAst $node.value.right
-            [CmdbCombine]$combine = $node.value.combine
-            [Bool]$distribute = $combine -eq [CmdbCombine]::And
-            [Bool]$left_comb = $left.term_type -eq [Term]::Combination
-            [Bool]$right_comb = $right.term_type -eq [Term]::Combination
-            [Bool]$distribute_left = $distribute -and $right_comb -and $right.value.combine -ne $combine
-            [Bool]$distribute_right = $distribute -and $left_comb -and $left.value.combine -ne $combine
-            if ($distribute_right) { return DistributeTerm -term $right -into $left -combine $combine }
-            if ($distribute_left)  { return DistributeTerm -term $left -into $right -combine $combine }
-            return [PSCustomObject]@{
-                term_type = [Term]::Combination
-                value = [PSCustomObject]@{
-                    left = $left; right = $right
-                    combine = $combine
-                }
-            }
-        }
-        ([Term]::Inversion)   { return InvertTerm $node.value }
-        ([Term]::Comparison)  { return $node }
-        ([Term]::Boolean)     { return $node }
+        term_type = [Term]::Boolean
+        value = $value
     }
 }
 
@@ -428,68 +321,131 @@ function CompareTerms {
     }
 }
 
-function CollapseTerms {
-    param([PSCustomObject[]]$terms, [CmdbCombine]$combine)
-    [PSCustomObject[]]$seen = @()
-    [PSCustomObject]$short_circuit = [PSCustomObject]@{
-        term_type = [Term]::Boolean
-        value = switch($combine) {
-            ([CmdbCombine]::And) { $false }
-            ([CmdbCombine]::Or)  { $true }
+function InvertOperator {
+    param([CmdbOperator]$operator)
+    switch ($operator) {
+        ([CmdbOperator]::IsMatch)            { return [CmdbOperator]::IsNotMatch }
+        ([CmdbOperator]::IsNotMatch)         { return [CmdbOperator]::IsMatch }
+        ([CmdbOperator]::IsEqual)            { return [CmdbOperator]::IsNotEqual }
+        ([CmdbOperator]::IsNotEqual)         { return [CmdbOperator]::IsEqual }
+        ([CmdbOperator]::LessThan)           { return [CmdbOperator]::GreaterThanOrEqual }
+        ([CmdbOperator]::LessThanOrEqual)    { return [CmdbOperator]::GreaterThan }
+        ([CmdbOperator]::GreaterThan)        { return [CmdbOperator]::LessThanOrEqual }
+        ([CmdbOperator]::GreaterThanOrEqual) { return [CmdbOperator]::LessThan }
+    }
+}
+function InvertCombine {
+    param([CmdbCombine]$combine)
+    switch ($combine) {
+        ([CmdbCombine]::And) { return [CmdbCombine]::Or }
+        ([CmdbCombine]::Or) { return [CmdbCombine]::And }
+    }
+}
+
+function InvertTerm {
+    param ([PSCustomObject]$node)
+    switch ($node.term_type) {
+        ([Term]::Comparison)  {
+            return [PSCustomObject]@{
+                term_type = [Term]::Comparison
+                value = [PSCustomObject]@{
+                    field = $node.value.field
+                    value = $node.value.value
+                    operator = InvertOperator $node.value.operator
+                }
+            }
         }
+        ([Term]::Combination) {
+            return NormalizeAst ([PSCustomObject]@{
+                term_type = [Term]::Combination
+                value = [PSCustomObject]@{
+                    left = InvertTerm $node.value.left
+                    right = InvertTerm $node.value.right
+                    combine = InvertCombine $node.value.combine
+                }
+            })
+        }
+        ([Term]::FlatCombination) {
+            return FlattenCombination `
+            -terms @($node.value.terms | ForEach-Object { InvertTerm $_ }) `
+            -combine (InvertCombine $node.value.combine)
+        }
+        ([Term]::Boolean) { return BoolTerm (-not $node.value) }
+        ([Term]::Inversion) { return NormalizeAst $node.value }
+    }
+}
+
+function FlattenCombination {
+    param([PSCustomObject[]]$terms, [CmdbCombine]$combine)
+    [PSCustomObject]$short_circuit = BoolTerm ($combine -eq [CmdbCombine]::Or)
+    [PSCustomObject]$neutral = InvertTerm $short_circuit
+    [PSCustomObject[]]$unique = @()
+    $terms = $terms | ForEach-Object {
+        if ($_.term_type -eq [Term]::FlatCombination -and $_.value.combine -eq $combine) `
+        { $_.value.terms } else { $_ }
     }
     foreach ($term in $terms) {
         [Bool]$add = $true
         [PSCustomObject]$inverse = InvertTerm $term
-        for ($i = 0; $i -lt $seen.Count; $i++) {
-            if (CompareTerms $term $seen[$i]) { $add = $false; break }
-            if (CompareTerms $inverse $seen[$i]) { return @($short_circuit) }
-            if (CompareTerms $term (InvertTerm $short_circuit)) { $add = $false; break }
+        if (CompareTerms $term $short_circuit) { return $term }
+        if (CompareTerms $term $neutral) { continue }
+        foreach ($seen in $unique) {
+            if (CompareTerms $inverse $seen) { return $short_circuit }
+            if (CompareTerms $term $seen) { $add = $false; break }
         }
-        if ($add) { $seen += $term }
+        if ($add) { $unique += $term }
     }
-    return $seen
+    if ($unique.Count -eq 0) { return $neutral }
+    if ($unique.Count -eq 1) { return $unique[0] }
+    return [PSCustomObject[]]@{
+        term_type = [Term]::FlatCombination
+        value = [PSCustomObject]@{
+            combine = $combine
+            terms = $unique
+        }
+    }
 }
 
-function SimplifyAst {
-    param([PSCustomObject]$node)
+function DistributeTerm {
+    param ([PSCustomObject]$term, [PSCustomObject]$into, [CmdbCombine]$combine)
+    return FlattenCombination -terms ($into.value.terms | ForEach-Object {
+        NormalizeAst ([PSCustomObject]@{
+            term_type = [Term]::Combination
+            value = [PSCustomObject]@{
+                left = $_; right = $term
+                combine = $combine
+            }
+        })
+    }) -combine $into.value.combine
+}
+
+function NormalizeAst {
+    param ([PSCustomObject]$node)
     switch ($node.term_type) {
         ([Term]::Combination) {
+            [PSCustomObject]$left = NormalizeAst $node.value.left
+            [PSCustomObject]$right = NormalizeAst $node.value.right
             [CmdbCombine]$combine = $node.value.combine
-            [PSCustomObject[]]$terms = @(
-                SimplifyAst $node.value.left  
-                SimplifyAst $node.value.right  
-            ) | ForEach-Object {
-                if ($_.term_type -eq [Term]::FlatCombination -and `
-                    $_.value.combine -eq $combine
-                ) { $_.value.terms } else { $_ }
-            }
-
-
-            $dummy = [PSCustomObject]@{
-                term_type = [Term]::FlatCombination
-                value = [PSCustomObject]@{
-                    terms = $terms
-                    combine = $combine
-                }
-            }
-            Write-Host "Collapsing $(RenderAst $dummy)"
-            $terms = CollapseTerms $terms $combine
-            if ($terms.Count -eq 1) { return $terms[0] }
-            return [PSCustomObject]@{
-                term_type = [Term]::FlatCombination
-                value = [PSCustomObject]@{
-                    terms = $terms
-                    combine = $combine
-                }
-            }
+            [Bool]$distribute = $combine -eq [CmdbCombine]::And
+            [Bool]$left_comb = $left.term_type -eq [Term]::FlatCombination
+            [Bool]$right_comb = $right.term_type -eq [Term]::FlatCombination
+            [Bool]$distribute_left = $distribute -and $right_comb -and $right.value.combine -ne $combine
+            [Bool]$distribute_right = $distribute -and $left_comb -and $left.value.combine -ne $combine
+            if ($distribute_right) { return DistributeTerm -term $right -into $left -combine $combine }
+            if ($distribute_left)  { return DistributeTerm -term $left -into $right -combine $combine }
+            return FlattenCombination -terms @($left, $right) -combine $combine
         }
-        ([Term]::Inversion) { $node.value = SimplifyAst $node.value; return $node }
-        ([Term]::FlatCombination) { return $node }
+        ([Term]::Inversion)       { return InvertTerm $node.value }
+        ([Term]::FlatCombination) { return $node } # Already Normalized
         ([Term]::Comparison)      { return $node }
         ([Term]::Boolean)         { return $node }
     }
 }
+
+
+#####################
+# SECTION INTERFACE #
+#####################
 
 function RenderAst {
     param ([PSCustomObject]$node)
@@ -509,37 +465,24 @@ function RenderAst {
             }) $($node.value.value | ConvertTo-Json)"
         }
         ([Term]::Combination) {
-            return "($(RenderAst $node.value.left) $(switch ($node.value.combine) {
+            return "($(RenderAst $node.value.left)) $(switch ($node.value.combine) {
                 ([CmdbCombine]::And) { "AND" }
                 ([CmdbCombine]::Or)  { "OR" }
-            }) $(RenderAst $node.value.right))"
+            }) ($(RenderAst $node.value.right))"
         }
         ([Term]::FlatCombination) {
             [String]$combine = switch ($node.value.combine) {
                 ([CmdbCombine]::And) { " AND " }
                 ([CmdbCombine]::Or)  { " OR " }
             }
-            return "($(($node.value.terms | ForEach-Object {
-                RenderAst $_
-            }) -join $combine))"
+            return ($node.value.terms | ForEach-Object {
+                "($(RenderAst $_))"
+            }) -join $combine
         }
     }
 }
 
 function EvaluateExpression {
     param([String]$expr)
-    return SimplifyAst (NormalizeAst (ParseExpression $expr))
+    return NormalizeAst (ParseExpression $expr)
 }
-
-# :: A & !(B | C & (A | B)) 
-# -> A & (!B & !(C & (A | B)))
-# -> A & (!B & (!C | !(A | B)))
-# -> A & (!B & (!C | (!A & !B)))
-# -> A & ((!B & !C) | (!B & (!A & !B)))
-# -> A & ((!B & !C) | (!B & !A & !B))
-# -> (A & (!B & !C)) | (A & (!B & !A & !B))
-# -> (A & !B & !C) | (A & !B & !A & !B)
-# -> (A & !B & !C) | ((A & !A) & !B)
-# -> (A & !B & !C) | (false & !B)
-# -> (A & !B & !C) | false
-# -> A & !B & !C
