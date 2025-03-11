@@ -285,6 +285,12 @@ function ParseExpression {
 # SECTION EVALUATION #
 ######################
 
+# Arguments:
+#   [Bool]$value - The value of the boolean
+# 
+# Returns:
+#   A PSCustomObject with `term_type` and `value`.
+#   - `value` holds the boolean
 function BoolTerm {
     param([Bool]$value)
     return [PSCustomObject]@{
@@ -293,8 +299,19 @@ function BoolTerm {
     }
 }
 
+# Checks if two term-nodes are equal
+#
+# Arguments:
+#   [PSCustomObject]$term_a - The first term
+#   [PSCustomObject]$term_b - The second term
+#
+# Returns:
+#   $true if the terms are equal or both $null
+#   $false otherwise
 function CompareTerms {
     param ([PSCustomObject]$term_a, [PSCustomObject]$term_b)
+    if ($null -eq $term_a -and $null -eq $term_b) { return $true }
+    if ($null -eq $term_a -or $null -eq $term_b) { return $false }
     if ($term_a.term_type -ne $term_b.term_type) { return $false }
     switch ($term_a.term_type) {
         ([Term]::FlatCombination) {
@@ -321,6 +338,19 @@ function CompareTerms {
     }
 }
 
+# Returns the logical inverse of a CmdbOperator
+# 
+# These are all operators and their inverses:
+#   IsMatch      <>  IsNotMatch
+#   IsEqual      <>  IsNotEqual
+#   LessThan     <>  GreaterThanOrEqual
+#   GreaterThan  <>  LessThanOrEqual
+#
+# Arguments:
+#   [CmdbOperator]$operator - The input operator
+#
+# Returns:
+#   A CmdbOperator that is inverse to the input
 function InvertOperator {
     param([CmdbOperator]$operator)
     switch ($operator) {
@@ -334,6 +364,15 @@ function InvertOperator {
         ([CmdbOperator]::GreaterThanOrEqual) { return [CmdbOperator]::LessThan }
     }
 }
+
+# Returns the logical inverse of a CmdbCombine
+# Input `And` returns `Or` and vice-versa
+#
+# Arguments:
+#   [CmdbCombine]$combine - The input combinator
+#
+# Returns:
+#   A CmdbCombine that is inverse to the input
 function InvertCombine {
     param([CmdbCombine]$combine)
     switch ($combine) {
@@ -342,6 +381,16 @@ function InvertCombine {
     }
 }
 
+# Returns the logical inverse of a term
+# Uses `InvertCombine` and `InvertOperator` as helper functions
+# Uses `NormalizeAST` to return a simplified value
+#
+# Arguments:
+#   [PSCustomObject]$node - The input term
+#
+# Returns:
+#   A PSCustomObject with `term_type` and `value`
+#   The term is returned in normalized form
 function InvertTerm {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
@@ -375,6 +424,17 @@ function InvertTerm {
     }
 }
 
+# Converts a Combination term into a FlatCombination
+# If any of the child terms are compatible FlatCombinations,
+# they will also get desolved into the parent term.
+#
+# Arguments:
+#   [PSCustomObject[]]$terms - The children terms
+#   [CmdbCombine]$combine - The combinator of the combination
+#
+# Returns:
+#   A PSCustomObject with `term_type` and `value`
+#   This term is always a FlatCombination
 function FlattenCombination {
     param([PSCustomObject[]]$terms, [CmdbCombine]$combine)
     [PSCustomObject]$short_circuit = BoolTerm ($combine -eq [CmdbCombine]::Or)
@@ -406,6 +466,17 @@ function FlattenCombination {
     }
 }
 
+# Distributes a term into a flat combination-term
+# Also normalizes and flattens the terms
+#
+# Arguments:
+#   [PSCustomObject]$term - The term that will get distributed
+#   [PSCustomObject]$into - The combination to distribute the term into
+#   [CmdbCombine]$combine - The combinator to join terms with
+#
+# Returns:
+#   A PSCustomObject with `term_type` and `value`
+#   This term is always a FlatCombination
 function DistributeTerm {
     param ([PSCustomObject]$term, [PSCustomObject]$into, [CmdbCombine]$combine)
     return FlattenCombination -terms ($into.value.terms | ForEach-Object {
@@ -419,6 +490,20 @@ function DistributeTerm {
     }) -combine $into.value.combine
 }
 
+# Normalizes an entire logic-AST
+# Resolves all Inversions by applying DeMorgan's Law
+# Distributes And-combinations into child-Or-combinations
+# Flattens the tree into a single flat Or-Combination,
+# that contains only flat And-Combinations (DNF)
+# Eliminates redundant comparisons
+# Evaluates tautologies and oximora
+#
+# Arguments:
+#   [PSCustomObject]$node - The AST root term
+#
+# Returns:
+#   A PSCustomObject with `term_type` and `value`
+#   The term is returned in disjunctive normal form
 function NormalizeAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
@@ -447,6 +532,13 @@ function NormalizeAst {
 # SECTION INTERFACE #
 #####################
 
+# Converts a logical term into a readable string
+#
+# Arguments:
+#   [PSCustomObject]$node - The input term
+#
+# Returns:
+#   A String representing the term
 function RenderAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
@@ -482,6 +574,14 @@ function RenderAst {
     }
 }
 
+# Parses and normalizes a logic expression
+#
+# Arguments:
+#   [String]$expr - The input expression to parse.
+#
+# Returns:
+#   A PSCustomObject with `term_type` and `value`
+#   The term is returned in disjunctive normal form
 function EvaluateExpression {
     param([String]$expr)
     return NormalizeAst (ParseExpression $expr)
