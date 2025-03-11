@@ -85,7 +85,7 @@ function ParseOperator {
 #   `$null` if no AND combinator is found.
 function ParseAnd {
     param ([Ref]$expr)
-    return ParsePattern $expr "^\s*(?<val>(&{1,2}|[Aa][Nn][Dd]))"
+    return ParsePattern $expr "(?i)^\s*(?<val>(&{1,2}|and))"
 }
 
 # Parses an OR combinator (||, | or "OR").
@@ -100,7 +100,7 @@ function ParseAnd {
 #   `$null` if no OR combinator is found.
 function ParseOr {
     param ([Ref]$expr)
-    return ParsePattern $expr "^\s*(?<val>(\|{1,2}|[Oo][Rr]))"
+    return ParsePattern $expr "(?i)^\s*(?<val>(\|{1,2}|or))"
 }
 
 # Maps a parsed operator string to a [CmdbOperator] enum value.
@@ -185,9 +185,9 @@ enum Term {
 # Throws on any unmatched opening parentheses.
 function ParseTerm {
     param ([Ref]$expr)
-    if ($expr.Value -match "^\s*(!|[Nn][Oo][Tt]\s*\()") {
-        [String]$inv = (ParsePattern $expr "^\s*(?<val>!|[Nn][Oo][Tt])").val
-        if (-not ($expr.Value -match "^\s*\(")) { throw "Expected Parentheses after '$inv'"}
+    if ($expr.Value -match "(?i)^\s*(!|not\s*\()") {
+        [String]$inv = (ParsePattern $expr "(?i)^\s*(?<val>!|not)").val
+        if (-not ($expr.Value -match "^\s*\(")) { throw "Expected Parentheses after '$inv'" }
         return [PSCustomObject]@{ term_type = [Term]::Inversion; value = ParseTerm $expr }
     }
     if (ParsePattern $expr "^\s*\(") {
@@ -292,7 +292,7 @@ function ParseExpression {
 #   A PSCustomObject with `term_type` and `value`.
 #   - `value` holds the boolean
 function BoolTerm {
-    param([Bool]$value)
+    param ([Bool]$value)
     return [PSCustomObject]@{
         term_type = [Term]::Boolean
         value = $value
@@ -352,7 +352,7 @@ function CompareTerms {
 # Returns:
 #   A CmdbOperator that is inverse to the input
 function InvertOperator {
-    param([CmdbOperator]$operator)
+    param ([CmdbOperator]$operator)
     switch ($operator) {
         ([CmdbOperator]::IsMatch)            { return [CmdbOperator]::IsNotMatch }
         ([CmdbOperator]::IsNotMatch)         { return [CmdbOperator]::IsMatch }
@@ -374,7 +374,7 @@ function InvertOperator {
 # Returns:
 #   A CmdbCombine that is inverse to the input
 function InvertCombine {
-    param([CmdbCombine]$combine)
+    param ([CmdbCombine]$combine)
     switch ($combine) {
         ([CmdbCombine]::And) { return [CmdbCombine]::Or }
         ([CmdbCombine]::Or) { return [CmdbCombine]::And }
@@ -436,7 +436,7 @@ function InvertTerm {
 #   A PSCustomObject with `term_type` and `value`
 #   This term is always a FlatCombination
 function FlattenCombination {
-    param([PSCustomObject[]]$terms, [CmdbCombine]$combine)
+    param ([PSCustomObject[]]$terms, [CmdbCombine]$combine)
     [PSCustomObject]$short_circuit = BoolTerm ($combine -eq [CmdbCombine]::Or)
     [PSCustomObject]$neutral = InvertTerm $short_circuit
     [PSCustomObject[]]$unique = @()
@@ -583,6 +583,6 @@ function RenderAst {
 #   A PSCustomObject with `term_type` and `value`
 #   The term is returned in disjunctive normal form
 function EvaluateExpression {
-    param([String]$expr)
+    param ([String]$expr)
     return NormalizeAst (ParseExpression $expr)
 }
