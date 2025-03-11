@@ -163,12 +163,27 @@ function ParseComparison {
     }
 }
 
+function ParseBool {
+    param ([Ref]$expr)
+    return ParsePattern $expr "(?i)^\s*(?<val>true|false)"
+}
+
+function MapBool {
+    param ([String]$bool_str)
+    switch ($bool_str.ToLower()) {
+        ("true")  { return $true }
+        ("false") { return $false }
+        default { throw "'$bool_str' is not a valid boolean" }
+    }
+}
+
 enum Term {
     Comparsion
     Combination
     FlatCombination
     Inversion
     Boolean
+    Symbol
 }
 
 # Parses a term, which can be a comparison, an inversion,
@@ -335,6 +350,7 @@ function CompareTerms {
         }
         ([Term]::Inversion) { return CompareTerms $term_a.value $term_b.value }
         ([Term]::Boolean) { return $term_a.value -eq $term_b.value }
+        ([Term]::Symbol) { return $term_a.value -eq $term_b.value }
     }
 }
 
@@ -418,6 +434,9 @@ function InvertTerm {
             return FlattenCombination `
             -terms @($node.value.terms | ForEach-Object { InvertTerm $_ }) `
             -combine (InvertCombine $node.value.combine)
+        }
+        ([Term]::Symbol) {
+            return [PSCustomObject]@{ term_type = [Term]::Inversion; value = $node }
         }
         ([Term]::Boolean) { return BoolTerm (-not $node.value) }
         ([Term]::Inversion) { return NormalizeAst $node.value }
@@ -524,6 +543,7 @@ function NormalizeAst {
         ([Term]::FlatCombination) { return $node } # Already Normalized
         ([Term]::Comparison)      { return $node }
         ([Term]::Boolean)         { return $node }
+        ([Term]::Symbol)          { return $node }
     }
 }
 
@@ -542,7 +562,7 @@ function NormalizeAst {
 function RenderAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
-        ([Term]::Boolean) { return $node.value | ConvertTo-Json }
+        ([Term]::Boolean) { return "$(if ($node.value) { "True" } else { "False" })" }
         ([Term]::Inversion) { return "NOT ($(RenderAst $node.value))" }
         ([Term]::Comparison) {
             return "$($node.value.field) $(switch ($node.value.operator) {
