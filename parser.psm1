@@ -21,11 +21,11 @@ class ParseResult {
 # Extracts the named capture group 'val'.
 #
 # Arguments:
-#   [Ref]$expr - The expression being parsed.
+#   [String]$expr - The input expression.
 #   [Regex]$regx - The regex pattern to match.
 #
 # Returns:
-#   A ParseResult with the extracted value of the `val` capture group.
+#   A `ParseResult` with the extracted value of the `val` capture group.
 #   `$null` on failure.
 function ParsePattern {
     param ([String]$expr, [Regex]$regx)
@@ -38,10 +38,10 @@ function ParsePattern {
 # Supports plain, single-quoted, and double-quoted strings.
 #
 # Arguments:
-#   [Ref]$expr - The expression being parsed.
+#   [String]$expr - The input expression.
 #
 # Returns:
-#   A ParseResult with the extracted string value, unescaped.
+#   A `ParseResult` with the extracted string value, unescaped.
 #   `$null` on failure.
 function ParseString {
     param ([String]$expr)
@@ -66,11 +66,11 @@ function ParseString {
 # >=     (GreaterThanOrEqual)
 #
 # Arguments:
-#   [Ref]$expr - The expression being parsed.
+#   [String]$expr - The input expression.
 #
 # Returns:
-#   A ParseResult with the extracted operator.
-#   `$null` if no operator is found.
+#   A `ParseResult` with the extracted operator.
+#   `$null` if no operator was found.
 function ParseOperator {
     param ([String]$expr)
     return ParsePattern $expr "^\s*(?<val>(=?~|!~|==?|!=|<>|<=?|>=?))"
@@ -79,11 +79,11 @@ function ParseOperator {
 # Parses an AND combinator (&&, & or "AND").
 #
 # Arguments:
-#   [Ref]$expr - The expression being parsed.
+#   [String]$expr - The input expression.
 #
 # Returns:
-#   A ParseResult with the extracted AND combinator.
-#   `$null` if no AND combinator is found.
+#   A `ParseResult` with the extracted AND combinator.
+#   `$null` if no AND combinator was found.
 function ParseAnd {
     param ([String]$expr)
     return ParsePattern $expr "(?i)^\s*(?<val>(&{1,2}|and))"
@@ -92,17 +92,17 @@ function ParseAnd {
 # Parses an OR combinator (||, | or "OR").
 #
 # Arguments:
-#   [Ref]$expr - The expression being parsed.
+#   [String]$expr - The input expression.
 #
 # Returns:
-#   A ParseResult with the extracted OR combinator.
-#   `$null` if no OR combinator is found.
+#   A `ParseResult` with the extracted OR combinator.
+#   `$null` if no OR combinator was found.
 function ParseOr {
     param ([String]$expr)
     return ParsePattern $expr "(?i)^\s*(?<val>(\|{1,2}|or))"
 }
 
-# Maps a parsed operator string to a [CmdbOperator] enum value.
+# Maps a parsed operator string to a `CmdbOperator` enum value.
 # Valid operators are:
 # ~  =~  (IsMatch)
 # !~     (IsNotMatch)
@@ -138,7 +138,15 @@ function MapOperator {
     }
 }
 
-enum Term {
+# Represents the type of a logical Term.
+# Can be one of the following:
+#   Comparison       <field> <operator> <value>
+#   Combination      <term> <combinator> <term>
+#   FlatCombination  <term> <combinator> ...
+#   Inversion        Not <term> or !<term>
+#   Boolean          True or False
+#   Symbol           <any identifier>
+enum TermType {
     Comparison
     Combination
     FlatCombination
@@ -151,11 +159,11 @@ enum Term {
 # The left and right side are parsed as any valid string value.
 #
 # Arguments:
-#   [Ref]$expr - The expression being parsed.
+#   [String]$expr - The input expression.
 #
 # Returns:
 #   A `PSCustomObject` with `term_type` and `value`.
-#   - `term_type` is always.
+#   - This Term is always a Comparison.
 #   `$null` on failure.
 #
 # Throws on an empty `field` string.
@@ -168,7 +176,7 @@ function ParseComparison {
     if (-not $value) { throw "Expected Value after '$($oper.val)'" }
     if (-not $field.val) { throw "Found Comparison with an empty field" }
     return [ParseResult]::New([PSCustomObject]@{
-        term_type = [Term]::Comparison
+        term_type = [TermType]::Comparison
         value = [PSCustomObject]@{
             field = $field.val
             value = $value.val
@@ -188,11 +196,20 @@ function ParseComparison {
 function BoolTerm {
     param ([Bool]$value)
     return [PSCustomObject]@{
-        term_type = [Term]::Boolean
+        term_type = [TermType]::Boolean
         value = $value
     }
 }
 
+# Parsed a boolean expression (True or False).
+# 
+# Arguments:
+#   [String]$expr - The input expression.
+#
+# Returns:
+#   A `PSCustomObject` with `term_type` and `value`.
+#   - This Term is always a Boolean.
+#   `$null` on failure.
 function ParseBool {
     param ([String]$expr)
     [ParseResult]$bool = ParsePattern $expr "(?i)^\s*(?<val>true|false)"
@@ -201,12 +218,34 @@ function ParseBool {
     return [ParseResult]::New((BoolTerm $val), $bool.rem)
 }
 
+# Parsed a Symbolic Term.
+# The Symbol has to starts with a letter (a-z),
+# and can contain letters, numbers, '-' and '_'.
+# 
+# Arguments:
+#   [String]$expr - The input expression.
+#
+# Returns:
+#   A `PSCustomObject` with `term_type` and `value`.
+#   - This Term is always a Symbol.
+#   `$null` on failure.
 function ParseSymbol {
     param ([String]$expr)
     [ParseResult]$sym = ParsePattern $expr "(?i)^\s*(?<val>[a-z][0-9a-z_-]*)"; if (-not $sym) { return $null }
-    return [ParseResult]::New([PSCustomObject]@{ term_type = [Term]::Symbol; value = $sym.val }, $sym.rem)
+    return [ParseResult]::New([PSCustomObject]@{ term_type = [TermType]::Symbol; value = $sym.val }, $sym.rem)
 }
 
+# Parses a grouped expression in parentheses.
+# 
+# Arguments:
+#   [String]$expr - The input expression.
+#
+# Returns:
+#   A `PSCustomObject` with `term_type` and `value`.
+#   $null on failure.
+#
+# Throws on inversion without following parentheses.
+# Throws on any unmatched opening parentheses.
 function ParseGroupedTerm {
     param ([String]$expr)
     [ParseResult]$lparen = ParsePattern $expr "^\s*\("
@@ -218,6 +257,18 @@ function ParseGroupedTerm {
     return [ParseResult]::New($inner.val, $rparen.rem)
 }
 
+# Parses an inverse term.
+# The inverted value can be another inversion, a symbol,
+# or a grouped subexpression in parentheses.
+# 
+# Arguments:
+#   [String]$expr - The input expression.
+#
+# Returns:
+#   A `PSCustomObject` with `term_type` and `value`.
+#   $null on failure.
+#
+# Throws on inversion with following comparison.
 function ParseInverseTerm {
     param ([String]$expr)
     [ParseResult]$inv = ParsePattern $expr "(?i)^\s*(?<val>!|not)"
@@ -226,19 +277,19 @@ function ParseInverseTerm {
     if ($comp) { throw "Expected Parentheses or Symbol after '$($inv.val)'" }
     [ParseResult]$inv = ParseInverseTerm $expr
     if ($inv) { return [ParseResult]::New([PSCustomObject]@{
-        term_type = [Term]::Inversion; value = $inv.val
+        term_type = [TermType]::Inversion; value = $inv.val
     }, $inv.rem) }
     [ParseResult]$group = ParseGroupedTerm $expr
     if ($group) { return [ParseResult]::New([PSCustomObject]@{
-        term_type = [Term]::Inversion; value = $group.val
+        term_type = [TermType]::Inversion; value = $group.val
     }, $group.rem) }
     [ParseResult]$bool = ParseBool $expr
     if ($bool) { return [ParseResult]::New([PSCustomObject]@{
-        term_type = [Term]::Inversion; value = $bool.val
+        term_type = [TermType]::Inversion; value = $bool.val
     }, $bool.rem) }
     [ParseResult]$symbol = ParseSymbol $expr
     if ($symbol) { return [ParseResult]::New([PSCustomObject]@{
-        term_type = [Term]::Inversion; value = $symbol.val
+        term_type = [TermType]::Inversion; value = $symbol.val
     }, $symbol.rem) }
     return $null
 }
@@ -248,13 +299,13 @@ function ParseInverseTerm {
 # or a symbol.
 #
 # Arguments:
-#   [Ref]$expr - The expression being parsed.
+#   [String]$expr - The input expression.
 #
 # Returns:
 #   A `PSCustomObject` with `term_type` and `value`.
 #   $null on failure.
 #
-# Throws on inversion without following parentheses.
+# Throws on inversion with following comparison.
 # Throws on any unmatched opening parentheses.
 function ParseTerm {
     param ([String]$expr)
@@ -268,7 +319,7 @@ function ParseTerm {
 # Parses a chain of AND-connected terms.
 #
 # Arguments:
-#   [Ref]$expr - The expression being parsed.
+#   [String]$expr - The input expression.
 #
 # Returns:
 #   A `PSCustomObject` with `term_type` and `value`.
@@ -281,7 +332,7 @@ function ParseAndChain {
     [ParseResult]$comb = ParseAnd $expr; if ($comb) { $expr = $comb.rem } else { return $left }
     [ParseResult]$right = ParseAndChain $expr; if (-not $right) { throw "Expected Expression after '$($comb.val)'" }
     return [ParseResult]::New([PSCustomObject]@{
-        term_type = [Term]::Combination
+        term_type = [TermType]::Combination
         value = [PSCustomObject]@{
             left = $left.val; right = $right.val
             combine = [CmdbCombine]::And
@@ -293,7 +344,7 @@ function ParseAndChain {
 # Uses `ParseAndChain` to handle precedence.
 #
 # Arguments:
-#   [Ref]$expr - The expression being parsed.
+#   [String]$expr - The input expression.
 #
 # Returns:
 #   A `PSCustomObject` with `term_type` and `value`.
@@ -306,7 +357,7 @@ function ParseTermChain {
     [ParseResult]$comb = ParseOr $expr; if ($comb) { $expr = $comb.rem } else { return $left }
     [ParseResult]$right = ParseTermChain $expr; if (-not $right) { throw "Expected Expression after '$($comb.val)'" }
     return [ParseResult]::New([PSCustomObject]@{
-        term_type = [Term]::Combination
+        term_type = [TermType]::Combination
         value = [PSCustomObject]@{
             left = $left.val; right = $right.val
             combine = [CmdbCombine]::Or
@@ -358,7 +409,7 @@ function CompareTerms {
     if ($null -eq $term_a -or $null -eq $term_b) { return $false }
     if ($term_a.term_type -ne $term_b.term_type) { return $false }
     switch ($term_a.term_type) {
-        ([Term]::FlatCombination) {
+        ([TermType]::FlatCombination) {
             if ($term_a.value.combine -ne $term_b.value.combine) { return $false }
             if ($term_a.value.terms.Count -ne $term_b.value.terms.Count) { return $false }
             for ($i = 0; $i -lt $term_a.value.terms.Count; $i++) {
@@ -367,19 +418,19 @@ function CompareTerms {
             }
             return $true
         }
-        ([Term]::Combination) {
+        ([TermType]::Combination) {
             return $term_a.value.combine -eq $term_b.value.combine `
                 -and (CompareTerms $term_a.value.left $term_b.value.left) `
                 -and (CompareTerms $term_a.value.right $term_b.value.right)
         }
-        ([Term]::Comparison) {
+        ([TermType]::Comparison) {
             return $term_a.value.operator -eq $term_b.value.operator `
                 -and $term_a.value.field -eq $term_b.value.field `
                 -and $term_a.value.value -eq $term_b.value.value
         }
-        ([Term]::Inversion) { return CompareTerms $term_a.value $term_b.value }
-        ([Term]::Boolean) { return $term_a.value -eq $term_b.value }
-        ([Term]::Symbol) { return $term_a.value -eq $term_b.value }
+        ([TermType]::Inversion) { return CompareTerms $term_a.value $term_b.value }
+        ([TermType]::Boolean) { return $term_a.value -eq $term_b.value }
+        ([TermType]::Symbol) { return $term_a.value -eq $term_b.value }
     }
 }
 
@@ -439,9 +490,9 @@ function InvertCombine {
 function InvertTerm {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
-        ([Term]::Comparison)  {
+        ([TermType]::Comparison)  {
             return [PSCustomObject]@{
-                term_type = [Term]::Comparison
+                term_type = [TermType]::Comparison
                 value = [PSCustomObject]@{
                     field = $node.value.field
                     value = $node.value.value
@@ -449,9 +500,9 @@ function InvertTerm {
                 }
             }
         }
-        ([Term]::Combination) {
+        ([TermType]::Combination) {
             return NormalizeAst ([PSCustomObject]@{
-                term_type = [Term]::Combination
+                term_type = [TermType]::Combination
                 value = [PSCustomObject]@{
                     left = InvertTerm $node.value.left
                     right = InvertTerm $node.value.right
@@ -459,16 +510,16 @@ function InvertTerm {
                 }
             })
         }
-        ([Term]::FlatCombination) {
+        ([TermType]::FlatCombination) {
             return FlattenCombination `
             -terms @($node.value.terms | ForEach-Object { InvertTerm $_ }) `
             -combine (InvertCombine $node.value.combine)
         }
-        ([Term]::Symbol) {
-            return [PSCustomObject]@{ term_type = [Term]::Inversion; value = $node }
+        ([TermType]::Symbol) {
+            return [PSCustomObject]@{ term_type = [TermType]::Inversion; value = $node }
         }
-        ([Term]::Boolean) { return BoolTerm (-not $node.value) }
-        ([Term]::Inversion) { return NormalizeAst $node.value }
+        ([TermType]::Boolean) { return BoolTerm (-not $node.value) }
+        ([TermType]::Inversion) { return NormalizeAst $node.value }
     }
 }
 
@@ -482,14 +533,14 @@ function InvertTerm {
 #
 # Returns:
 #   A `PSCustomObject` with `term_type` and `value`.
-#   This term is always a FlatCombination.
+#   - This Term is always a FlatCombination.
 function FlattenCombination {
     param ([PSCustomObject[]]$terms, [CmdbCombine]$combine)
     [PSCustomObject]$short_circuit = BoolTerm ($combine -eq [CmdbCombine]::Or)
     [PSCustomObject]$neutral = InvertTerm $short_circuit
     [PSCustomObject[]]$unique = @()
     $terms = $terms | ForEach-Object {
-        if ($_.term_type -eq [Term]::FlatCombination -and $_.value.combine -eq $combine) `
+        if ($_.term_type -eq [TermType]::FlatCombination -and $_.value.combine -eq $combine) `
         { $_.value.terms } else { $_ }
     }
     foreach ($term in $terms) {
@@ -506,7 +557,7 @@ function FlattenCombination {
     if ($unique.Count -eq 0) { return $neutral }
     if ($unique.Count -eq 1) { return $unique[0] }
     return [PSCustomObject[]]@{
-        term_type = [Term]::FlatCombination
+        term_type = [TermType]::FlatCombination
         value = [PSCustomObject]@{
             combine = $combine
             terms = $unique
@@ -524,12 +575,12 @@ function FlattenCombination {
 #
 # Returns:
 #   A `PSCustomObject` with `term_type` and `value`.
-#   - This term is always a FlatCombination.
+#   - This Term is always a FlatCombination.
 function DistributeTerm {
     param ([PSCustomObject]$term, [PSCustomObject]$into, [CmdbCombine]$combine)
     return FlattenCombination -terms ($into.value.terms | ForEach-Object {
         NormalizeAst ([PSCustomObject]@{
-            term_type = [Term]::Combination
+            term_type = [TermType]::Combination
             value = [PSCustomObject]@{
                 left = $_; right = $term
                 combine = $combine
@@ -555,24 +606,24 @@ function DistributeTerm {
 function NormalizeAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
-        ([Term]::Combination) {
+        ([TermType]::Combination) {
             [PSCustomObject]$left = NormalizeAst $node.value.left
             [PSCustomObject]$right = NormalizeAst $node.value.right
             [CmdbCombine]$combine = $node.value.combine
             [Bool]$distribute = $combine -eq [CmdbCombine]::And
-            [Bool]$left_comb = $left.term_type -eq [Term]::FlatCombination
-            [Bool]$right_comb = $right.term_type -eq [Term]::FlatCombination
+            [Bool]$left_comb = $left.term_type -eq [TermType]::FlatCombination
+            [Bool]$right_comb = $right.term_type -eq [TermType]::FlatCombination
             [Bool]$distribute_left = $distribute -and $right_comb -and $right.value.combine -ne $combine
             [Bool]$distribute_right = $distribute -and $left_comb -and $left.value.combine -ne $combine
             if ($distribute_right) { return DistributeTerm -term $right -into $left -combine $combine }
             if ($distribute_left)  { return DistributeTerm -term $left -into $right -combine $combine }
             return FlattenCombination -terms @($left, $right) -combine $combine
         }
-        ([Term]::Inversion)       { return InvertTerm $node.value }
-        ([Term]::FlatCombination) { return $node } # Already Normalized.
-        ([Term]::Comparison)      { return $node }
-        ([Term]::Boolean)         { return $node }
-        ([Term]::Symbol)          { return $node }
+        ([TermType]::Inversion)       { return InvertTerm $node.value }
+        ([TermType]::FlatCombination) { return $node } # Already Normalized.
+        ([TermType]::Comparison)      { return $node }
+        ([TermType]::Boolean)         { return $node }
+        ([TermType]::Symbol)          { return $node }
     }
 }
 
@@ -591,10 +642,10 @@ function NormalizeAst {
 function RenderAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
-        ([Term]::Boolean) { return "$(if ($node.value) { "True" } else { "False" })" }
-        ([Term]::Inversion) { return "!$(RenderAst $node.value)" }
-        ([Term]::Symbol) { return $node.value }
-        ([Term]::Comparison) {
+        ([TermType]::Boolean) { return "$(if ($node.value) { "True" } else { "False" })" }
+        ([TermType]::Inversion) { return "!$(RenderAst $node.value)" }
+        ([TermType]::Symbol) { return $node.value }
+        ([TermType]::Comparison) {
             return "$($node.value.field) $(switch ($node.value.operator) {
                 ([CmdbOperator]::IsMatch)            { "=~" }
                 ([CmdbOperator]::IsNotMatch)         { "!~" }
@@ -606,13 +657,13 @@ function RenderAst {
                 ([CmdbOperator]::GreaterThanOrEqual) { ">=" }
             }) $($node.value.value | ConvertTo-Json)"
         }
-        ([Term]::Combination) {
+        ([TermType]::Combination) {
             return "($(RenderAst $node.value.left)) $(switch ($node.value.combine) {
                 ([CmdbCombine]::And) { "AND" }
                 ([CmdbCombine]::Or)  { "OR" }
             }) ($(RenderAst $node.value.right))"
         }
-        ([Term]::FlatCombination) {
+        ([TermType]::FlatCombination) {
             [String]$combine = switch ($node.value.combine) {
                 ([CmdbCombine]::And) { " & " }
                 ([CmdbCombine]::Or)  { " | " }
