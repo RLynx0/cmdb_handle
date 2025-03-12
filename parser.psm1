@@ -4,123 +4,47 @@ using module .\cmdb_handle.psm1
 # SECTION PARSING #
 ###################
 
-# Parses a regex pattern
-# Extracts the named capture group 'val'.
-#
-# Arguments:
-#   [Ref]$expr - The expression being parsed.
-#   [Regex]$regx - The regex pattern to match.
-#
-# Returns:
-#   A PSCustomObject with `val` and `consumed`
-#   - `val` holds the extracted value from 'val' capture group.
-#   - `consumed` hodls the entire matched expression.
-#   `$null` on failure.
+class ParseResult {
+    [Object]$val
+    [String]$rem
+    ParseResult([Object]$val, [String]$rem) {
+        $this.val = $val; $this.rem = $rem
+    }
+}
+
 function ParsePattern {
-    param ([Ref]$expr, [Regex]$regx)
-    if ($expr.Value -match $regx) {
-        $expr.Value = $expr.Value -replace $regx, ""
-        return [PSCustomObject]@{
-            val = $Matches["val"]
-            consumed = $Matches[0]
-        }
+    param ([String]$expr, [Regex]$regx)
+    if ($expr -match $regx) {
+        return [ParseResult]::New($Matches["val"], $expr.Substring($Matches[0].Length))
     } else { return $null }
 }
 
-# Parses a string value
-# Supports plain, single-quoted, and double-quoted strings.
-#
-# Arguments:
-#   [Ref]$expr - The expression being parsed.
-#
-# Returns:
-#   A PSCustomObject with `val` and `consumed`.
-#   - `val` holds the extracted string value, unescaped.
-#   - `consumed` holds the entire matched expression.
-#   `$null` on failure.
 function ParseString {
-    param ([Ref]$expr)
+    param ([String]$expr)
     [String]$plain = "(?<val>(\\.|\s*[^\s`"'!=~<>&|()])+)"
     [String]$single = "'(?<val>(\\.|[^'])*)'"
     [String]$double = "`"(?<val>(\\.|[^`"])*)`""
-    [PSCustomObject]$str = ParsePattern $expr "^\s*($plain|$single|$double)"
-    if (-not $str) { return $null }
+    [ParseResult]$str = ParsePattern $expr "^\s*($plain|$single|$double)"
+    if ($null -eq $str) { return $null }
     $str.val = $str.val -replace "\\(.)", '$1'
     return $str
 }
 
-# Parses a comparison operator
-# Valid operators are:
-# ~  =~  (IsMatch)
-# !~     (IsNotMatch)
-# =  ==  (IsEqual)
-# != <>  (IsNotEqual)
-# <      (LessThan)
-# <=     (LessThanOrEqual)
-# >      (GreaterThan)
-# >=     (GreaterThanOrEqual)
-# 
-# Arguments:
-#   [Ref]$expr - The expression being parsed.
-#
-# Returns:
-#   A PSCustomObject with `val` and `consumed`.
-#   - `val` holds the extracted operator.
-#   - `consumed` holds the entire matched expression.
-#   `$null` if no operator is found.
 function ParseOperator {
-    param ([Ref]$expr)
+    param ([String]$expr)
     return ParsePattern $expr "^\s*(?<val>(=?~|!~|==?|!=|<>|<=?|>=?))"
 }
 
-# Parses an AND combinator (&&, & or "AND").
-#
-# Arguments:
-#   [Ref]$expr - The expression being parsed.
-#
-# Returns:
-#   A PSCustomObject with `val` and `consumed`.
-#   - `val` holds the extracted AND combinator.
-#   - `consumed` holds the entire matched expression.
-#   `$null` if no AND combinator is found.
 function ParseAnd {
-    param ([Ref]$expr)
+    param ([String]$expr)
     return ParsePattern $expr "(?i)^\s*(?<val>(&{1,2}|and))"
 }
 
-# Parses an OR combinator (||, | or "OR").
-#
-# Arguments:
-#   [Ref]$expr - The expression being parsed.
-#
-# Returns:
-#   A PSCustomObject with `val` and `consumed`.
-#   - `val` holds the extracted OR combinator.
-#   - `consumed` holds the entire matched expression.
-#   `$null` if no OR combinator is found.
 function ParseOr {
-    param ([Ref]$expr)
+    param ([String]$expr)
     return ParsePattern $expr "(?i)^\s*(?<val>(\|{1,2}|or))"
 }
 
-# Maps a parsed operator string to a [CmdbOperator] enum value.
-# Valid operators are:
-# ~  =~  (IsMatch)
-# !~     (IsNotMatch)
-# =  ==  (IsEqual)
-# != <>  (IsNotEqual)
-# <      (LessThan)
-# <=     (LessThanOrEqual)
-# >      (GreaterThan)
-# >=     (GreaterThanOrEqual)
-# 
-# Arguments:
-#   [String]$op_str - The operator string to map.
-#
-# Returns:
-#   The corresponding [CmdbOperator] enum value.
-#
-# Throws on failure.
 function MapOperator {
     param ([String]$op_str)
     switch ($op_str) {
@@ -139,32 +63,25 @@ function MapOperator {
     }
 }
 
-# Parses a single comparison (e.g., `age >= 30`).
-# The left and right side are parsed as any valid string value.
-# 
-# Arguments:
-#   [Ref]$expr - The expression being parsed.
-#
-# Returns:
-#   A PSCustomObject with `field`, `value`, and `operator`.
-#   `$null` on failure.
-#
-# Throws on an empty `field` string
 function ParseComparison {
-    param ([Ref]$expr)
-    [PSCustomObject]$field = ParseString $expr; if (-not $field) { return $null }
-    [PSCustomObject]$oper = ParseOperator $expr; if (-not $oper) { return $null }
-    [PSCustomObject]$value = ParseString $expr; if (-not $value) { return $null }
+    param ([String]$expr)
+    [ParseResult]$field = ParseString $expr; if ($field) { $expr = $field.rem } else { return $null }
+    [ParseResult]$oper = ParseOperator $expr; if ($oper) { $expr = $oper.rem } else { return $null }
+    [ParseResult]$value = ParseString $expr
+    if (-not $value) { throw "Expected Value after '$($oper.val)'" }
     if (-not $field.val) { throw "Found Comparison with an empty field" }
-    return [PSCustomObject]@{
-        field = $field.val
-        value = $value.val
-        operator = (MapOperator $oper.val)
-    }
+    return [ParseResult]::New([PSCustomObject]@{
+        term_type = [Term]::Comparison
+        value = [PSCustomObject]@{
+            field = $field.val
+            value = $value.val
+            operator = MapOperator $oper.val
+        }
+    }, $value.rem)
 }
 
 function ParseBool {
-    param ([Ref]$expr)
+    param ([String]$expr)
     return ParsePattern $expr "(?i)^\s*(?<val>true|false)"
 }
 
@@ -173,12 +90,12 @@ function MapBool {
     switch ($bool_str.ToLower()) {
         ("true")  { return $true }
         ("false") { return $false }
-        default { throw "'$bool_str' is not a valid boolean" }
+        default { throw "'$bool_str' is not a valid Boolean!"}
     }
 }
 
 enum Term {
-    Comparsion
+    Comparison
     Combination
     FlatCombination
     Inversion
@@ -186,113 +103,87 @@ enum Term {
     Symbol
 }
 
-# Parses a term, which can be a comparison, an inversion,
-# or a grouped subexpression in parentheses.
-# 
-# Arguments:
-#   [Ref]$expr - The expression being parsed.
-# 
-# Returns:
-#   A PSCustomObject with `term_type` and `value`.
-#   $null on failure.
-#
-# Throws on inversion without following parentheses.
-# Throws on any unmatched opening parentheses.
-function ParseTerm {
-    param ([Ref]$expr)
-    if ($expr.Value -match "(?i)^\s*(!|not\s*\()") {
-        [String]$inv = (ParsePattern $expr "(?i)^\s*(?<val>!|not)").val
-        if (-not ($expr.Value -match "^\s*\(")) { throw "Expected Parentheses after '$inv'" }
-        return [PSCustomObject]@{ term_type = [Term]::Inversion; value = ParseTerm $expr }
-    }
-    if (ParsePattern $expr "^\s*\(") {
-        [PSCustomObject]$inner = ParseTermChain $expr
-        if (-not $inner) { throw "Expected Expression inside Parentheses" }
-        if (-not (ParsePattern $expr "^\s*\)")) { throw "Found unmatched '('" }
-        return $inner
-    }
-    [PSCustomObject]$val = ParseComparison $expr
-    if (-not $val) { return $null }
-    return [PSCustomObject]@{ term_type = [Term]::Comparison; value = $val }
+function ParseSymbol {
+    param ([String]$expr)
+    [ParseResult]$sym = ParsePattern $expr "(?i)^\s*(?<val>[a-z][0-9a-z_-]*)"; if (-not $sym) { return $null }
+    return [ParseResult]::New([PSCustomObject]@{ term_type = [Term]::Symbol; value = $sym.val }, $sym.rem)
 }
 
-# Parses a chain of AND-connected terms.
-# 
-# Arguments:
-#   [Ref]$expr - The expression being parsed.
-# 
-# Returns:
-#   A PSCustomObject with `term_type` and `value`.
-#   $null on failure.
-#
-# Throws on any dangling operator.
+function ParseGroupedTerm {
+    param ([String]$expr)
+    [ParseResult]$lparen = ParsePattern $expr "^\s*\("
+    if ($lparen) { $expr = $lparen.rem } else { return $null }
+    [ParseResult]$inner = ParseTermChain $expr
+    if ($inner) { $expr = $inner.rem } else { throw "Expected Expression inside Parentheses" }
+    [ParseResult]$rparen = ParsePattern $expr "^\s*\)"
+    if (-not $rparen) { throw "Found unmatched '('" }
+    return [ParseResult]::New($inner.val, $rparen.rem)
+}
+
+function ParseInverseTerm {
+    param ([String]$expr)
+    [ParseResult]$inv = ParsePattern $expr "(?i)^\s*(?<val>!|not)"
+    if ($inv) { $expr = $inv.rem } else { return $null }
+    [ParseResult]$comp = ParseComparison $expr
+    if ($comp) { throw "Expected Parentheses or Symbol after '$($inv.val)'" }
+    [ParseResult]$inv = ParseInverseTerm $expr
+    if ($inv) { return [ParseResult]::New([PSCustomObject]@{
+        term_type = [Term]::Inversion; value = $inv.val
+    }, $inv.rem) }
+    [ParseResult]$group = ParseGroupedTerm $expr
+    if ($group) { return [ParseResult]::New([PSCustomObject]@{
+        term_type = [Term]::Inversion; value = $group.val
+    }, $group.rem) }
+    [ParseResult]$symbol = ParseSymbol $expr
+    if ($symbol) { return [ParseResult]::New([PSCustomObject]@{
+        term_type = [Term]::Inversion; value = $symbol.val
+    }, $symbol.rem) }
+    return $null
+}
+
+function ParseTerm {
+    param ([String]$expr)
+    [ParseResult]$comp = ParseComparison $expr; if ($comp) { return $comp }
+    [ParseResult]$group = ParseGroupedTerm $expr; if ($group) { return $group }
+    [ParseResult]$inv = ParseInverseTerm $expr; if ($inv) { return $inv }
+    return ParseSymbol $expr
+}
+
 function ParseAndChain {
-    param ([Ref]$expr)
-    [PSCustomObject]$left = ParseTerm $expr
-    if (-not $left) { return $null }
-    [PSCustomObject]$combinator = ParseAnd $expr
-    if (-not $combinator) { return $left }
-    [PSCustomObject]$right = ParseAndChain $expr
-    if (-not $right) { throw "Expected Expression after '$($combinator.val)'"}
-    return [PSCustomObject]@{
+    param ([String]$expr)
+    [ParseResult]$left = ParseTerm $expr; if ($left) { $expr = $left.rem } else { return $null }
+    [ParseResult]$comb = ParseAnd $expr; if ($comb) { $expr = $comb.rem } else { return $left }
+    [ParseResult]$right = ParseAndChain $expr; if (-not $right) { throw "Expected Expression after '$($comb.val)'" }
+    return [ParseResult]::New([PSCustomObject]@{
         term_type = [Term]::Combination
         value = [PSCustomObject]@{
-            left = $left; right = $right
+            left = $left.val; right = $right.val
             combine = [CmdbCombine]::And
         }
-    }
+    }, $right.rem)
 }
 
-# Parses a chain of OR-connected terms.
-# Uses `ParseAndChain` to handle precedence.
-#
-# Arguments:
-#   [Ref]$expr - The expression being parsed.
-# 
-# Returns:
-#   A PSCustomObject with `term_type` and `value`.
-#   $null on failure.
-#
-# Throws on any dangling operator.
 function ParseTermChain {
-    param ([Ref]$expr)
-    [PSCustomObject]$left = ParseAndChain $expr
-    if (-not $left) { return $null }
-    [PSCustomObject]$combinator = ParseOr $expr
-    if (-not $combinator) { return $left }
-    [PSCustomObject]$right = ParseTermChain $expr
-    if (-not $right) { throw "Expected Expression after '$($combinator.val)'" }
-    return [PSCustomObject]@{
+    param ([String]$expr)
+    [ParseResult]$left = ParseAndChain $expr; if ($left) { $expr = $left.rem } else { return $null }
+    [ParseResult]$comb = ParseOr $expr; if ($comb) { $expr = $comb.rem } else { return $left }
+    [ParseResult]$right = ParseTermChain $expr; if (-not $right) { throw "Expected Expression after '$($comb.val)'" }
+    return [ParseResult]::New([PSCustomObject]@{
         term_type = [Term]::Combination
         value = [PSCustomObject]@{
-            left = $left; right = $right
+            left = $left.val; right = $right.val
             combine = [CmdbCombine]::Or
         }
-    }
+    }, $right.rem)
 }
 
-# Parses an entire boolean expression into a structured AST.
-#
-# Examples:
-# ```
-# ParseExpression("location ~ RZ%")
-# ParseExpression("age >= 30 AND (name = 'Alice' OR NOT (city = 'Paris'))")
-# ````
-#
-# Arguments:
-#   [String]$string - The input expression to parse.
-#
-# Returns:
-#   A structured PSCustomObject representing the parsed expression.
-#
-# Throws on any syntax errors.
 function ParseExpression {
-    param ([String]$string)
-    [PSCustomObject]$evaluated = ParseTermChain ([Ref]$string)
-    if (-not $evaluated)  { throw "Expected Expression" }
-    [PSCustomObject]$trail = ParsePattern ([Ref]$string) "^\s*(?<val>\S+)"
+    param ([String]$expr)
+    [ParseResult]$evaluated = ParseTermChain $expr
+    if (-not $evaluated) { throw "Expected Expression" }
+    [ParseResult]$trail = ParsePattern $evaluated.rem "^\s*(?<val>\S+)"
     if ($trail) { throw "Unexpected '$($trail.val)' after Expression" }
-    return $evaluated
+    return $evaluated.val
 }
 
 
@@ -563,7 +454,8 @@ function RenderAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
         ([Term]::Boolean) { return "$(if ($node.value) { "True" } else { "False" })" }
-        ([Term]::Inversion) { return "NOT ($(RenderAst $node.value))" }
+        ([Term]::Inversion) { return "!$(RenderAst $node.value)" }
+        ([Term]::Symbol) { return $node.value }
         ([Term]::Comparison) {
             return "$($node.value.field) $(switch ($node.value.operator) {
                 ([CmdbOperator]::IsMatch)            { "=~" }
@@ -584,11 +476,11 @@ function RenderAst {
         }
         ([Term]::FlatCombination) {
             [String]$combine = switch ($node.value.combine) {
-                ([CmdbCombine]::And) { " AND " }
-                ([CmdbCombine]::Or)  { " OR " }
+                ([CmdbCombine]::And) { " & " }
+                ([CmdbCombine]::Or)  { " | " }
             }
             return ($node.value.terms | ForEach-Object {
-                "($(RenderAst $_))"
+                RenderAst $_
             }) -join $combine
         }
     }
