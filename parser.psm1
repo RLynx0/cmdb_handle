@@ -63,6 +63,15 @@ function MapOperator {
     }
 }
 
+enum Term {
+    Comparison
+    Combination
+    FlatCombination
+    Inversion
+    Boolean
+    Symbol
+}
+
 function ParseComparison {
     param ([String]$expr)
     [ParseResult]$field = ParseString $expr; if ($field) { $expr = $field.rem } else { return $null }
@@ -82,25 +91,15 @@ function ParseComparison {
 
 function ParseBool {
     param ([String]$expr)
-    return ParsePattern $expr "(?i)^\s*(?<val>true|false)"
-}
-
-function MapBool {
-    param ([String]$bool_str)
-    switch ($bool_str.ToLower()) {
-        ("true")  { return $true }
-        ("false") { return $false }
-        default { throw "'$bool_str' is not a valid Boolean!"}
-    }
-}
-
-enum Term {
-    Comparison
-    Combination
-    FlatCombination
-    Inversion
-    Boolean
-    Symbol
+    [ParseResult]$bool = ParsePattern $expr "(?i)^\s*(?<val>true|false)"
+    if (-not $bool) { return $null }
+    return [ParseResult]::New([PSCustomObject]@{
+        term_type = [Term]::Boolean
+        value = switch ($bool.val.ToLower()) {
+            ("true")  { $true }
+            ("false") { $false }
+        }
+    }, $bool.rem)
 }
 
 function ParseSymbol {
@@ -134,6 +133,10 @@ function ParseInverseTerm {
     if ($group) { return [ParseResult]::New([PSCustomObject]@{
         term_type = [Term]::Inversion; value = $group.val
     }, $group.rem) }
+    [ParseResult]$bool = ParseBool $expr
+    if ($bool) { return [ParseResult]::New([PSCustomObject]@{
+        term_type = [Term]::Inversion; value = $bool.val
+    }, $bool.rem) }
     [ParseResult]$symbol = ParseSymbol $expr
     if ($symbol) { return [ParseResult]::New([PSCustomObject]@{
         term_type = [Term]::Inversion; value = $symbol.val
@@ -146,6 +149,7 @@ function ParseTerm {
     [ParseResult]$comp = ParseComparison $expr; if ($comp) { return $comp }
     [ParseResult]$group = ParseGroupedTerm $expr; if ($group) { return $group }
     [ParseResult]$inv = ParseInverseTerm $expr; if ($inv) { return $inv }
+    [ParseResult]$bool = ParseBool $expr; if ($bool) { return $bool }
     return ParseSymbol $expr
 }
 
