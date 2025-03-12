@@ -4,6 +4,11 @@ using module .\cmdb_handle.psm1
 # SECTION PARSING #
 ###################
 
+# Represents a successfully parsed object.
+#
+# Fields:
+#   [Object]$val - The extracted and/or mapped value.
+#   [String]$rem - Substring without the parsed part.
 class ParseResult {
     [Object]$val
     [String]$rem
@@ -12,6 +17,16 @@ class ParseResult {
     }
 }
 
+# Parses a regex pattern.
+# Extracts the named capture group 'val'.
+#
+# Arguments:
+#   [Ref]$expr - The expression being parsed.
+#   [Regex]$regx - The regex pattern to match.
+#
+# Returns:
+#   A ParseResult with the extracted value of the `val` capture group.
+#   `$null` on failure.
 function ParsePattern {
     param ([String]$expr, [Regex]$regx)
     if ($expr -match $regx) {
@@ -19,6 +34,15 @@ function ParsePattern {
     } else { return $null }
 }
 
+# Parses a string value.
+# Supports plain, single-quoted, and double-quoted strings.
+#
+# Arguments:
+#   [Ref]$expr - The expression being parsed.
+#
+# Returns:
+#   A ParseResult with the extracted string value, unescaped.
+#   `$null` on failure.
 function ParseString {
     param ([String]$expr)
     [String]$plain = "(?<val>(\\.|\s*[^\s`"'!=~<>&|()])+)"
@@ -30,21 +54,72 @@ function ParseString {
     return $str
 }
 
+# Parses a comparison operator.
+# Valid operators are:
+# ~  =~  (IsMatch)
+# !~     (IsNotMatch)
+# =  ==  (IsEqual)
+# != <>  (IsNotEqual)
+# <      (LessThan)
+# <=     (LessThanOrEqual)
+# >      (GreaterThan)
+# >=     (GreaterThanOrEqual)
+#
+# Arguments:
+#   [Ref]$expr - The expression being parsed.
+#
+# Returns:
+#   A ParseResult with the extracted operator.
+#   `$null` if no operator is found.
 function ParseOperator {
     param ([String]$expr)
     return ParsePattern $expr "^\s*(?<val>(=?~|!~|==?|!=|<>|<=?|>=?))"
 }
 
+# Parses an AND combinator (&&, & or "AND").
+#
+# Arguments:
+#   [Ref]$expr - The expression being parsed.
+#
+# Returns:
+#   A ParseResult with the extracted AND combinator.
+#   `$null` if no AND combinator is found.
 function ParseAnd {
     param ([String]$expr)
     return ParsePattern $expr "(?i)^\s*(?<val>(&{1,2}|and))"
 }
 
+# Parses an OR combinator (||, | or "OR").
+#
+# Arguments:
+#   [Ref]$expr - The expression being parsed.
+#
+# Returns:
+#   A ParseResult with the extracted OR combinator.
+#   `$null` if no OR combinator is found.
 function ParseOr {
     param ([String]$expr)
     return ParsePattern $expr "(?i)^\s*(?<val>(\|{1,2}|or))"
 }
 
+# Maps a parsed operator string to a [CmdbOperator] enum value.
+# Valid operators are:
+# ~  =~  (IsMatch)
+# !~     (IsNotMatch)
+# =  ==  (IsEqual)
+# != <>  (IsNotEqual)
+# <      (LessThan)
+# <=     (LessThanOrEqual)
+# >      (GreaterThan)
+# >=     (GreaterThanOrEqual)
+#
+# Arguments:
+#   [String]$op_str - The operator string to map.
+#
+# Returns:
+#   The corresponding `CmdbOperator` enum value.
+#
+# Throws on failure.
 function MapOperator {
     param ([String]$op_str)
     switch ($op_str) {
@@ -72,6 +147,19 @@ enum Term {
     Symbol
 }
 
+# Parses a single comparison (e.g., `age >= 30`).
+# The left and right side are parsed as any valid string value.
+#
+# Arguments:
+#   [Ref]$expr - The expression being parsed.
+#
+# Returns:
+#   A `PSCustomObject` with `term_type` and `value`.
+#   - `term_type` is always.
+#   `$null` on failure.
+#
+# Throws on an empty `field` string.
+# Throws on an operator without following value.
 function ParseComparison {
     param ([String]$expr)
     [ParseResult]$field = ParseString $expr; if ($field) { $expr = $field.rem } else { return $null }
@@ -89,17 +177,28 @@ function ParseComparison {
     }, $value.rem)
 }
 
+# Converts a boolean value to a Term.
+#
+# Arguments:
+#   [Bool]$value - The value of the boolean.
+#
+# Returns:
+#   A `PSCustomObject` with `term_type` and `value`.
+#   - `value` holds the boolean.
+function BoolTerm {
+    param ([Bool]$value)
+    return [PSCustomObject]@{
+        term_type = [Term]::Boolean
+        value = $value
+    }
+}
+
 function ParseBool {
     param ([String]$expr)
     [ParseResult]$bool = ParsePattern $expr "(?i)^\s*(?<val>true|false)"
     if (-not $bool) { return $null }
-    return [ParseResult]::New([PSCustomObject]@{
-        term_type = [Term]::Boolean
-        value = switch ($bool.val.ToLower()) {
-            ("true")  { $true }
-            ("false") { $false }
-        }
-    }, $bool.rem)
+    [Bool]$val = $bool.val.ToLower() -eq "true"
+    return [ParseResult]::New((BoolTerm $val), $bool.rem)
 }
 
 function ParseSymbol {
@@ -144,6 +243,19 @@ function ParseInverseTerm {
     return $null
 }
 
+# Parses a term, which can be a comparison, an inversion,
+# a grouped subexpression in parentheses, a boolean value,
+# or a symbol.
+#
+# Arguments:
+#   [Ref]$expr - The expression being parsed.
+#
+# Returns:
+#   A `PSCustomObject` with `term_type` and `value`.
+#   $null on failure.
+#
+# Throws on inversion without following parentheses.
+# Throws on any unmatched opening parentheses.
 function ParseTerm {
     param ([String]$expr)
     [ParseResult]$comp = ParseComparison $expr; if ($comp) { return $comp }
@@ -153,6 +265,16 @@ function ParseTerm {
     return ParseSymbol $expr
 }
 
+# Parses a chain of AND-connected terms.
+#
+# Arguments:
+#   [Ref]$expr - The expression being parsed.
+#
+# Returns:
+#   A `PSCustomObject` with `term_type` and `value`.
+#   $null on failure.
+#
+# Throws on any dangling operator.
 function ParseAndChain {
     param ([String]$expr)
     [ParseResult]$left = ParseTerm $expr; if ($left) { $expr = $left.rem } else { return $null }
@@ -167,6 +289,17 @@ function ParseAndChain {
     }, $right.rem)
 }
 
+# Parses a chain of OR-connected terms.
+# Uses `ParseAndChain` to handle precedence.
+#
+# Arguments:
+#   [Ref]$expr - The expression being parsed.
+#
+# Returns:
+#   A `PSCustomObject` with `term_type` and `value`.
+#   $null on failure.
+#
+# Throws on any dangling operator.
 function ParseTermChain {
     param ([String]$expr)
     [ParseResult]$left = ParseAndChain $expr; if ($left) { $expr = $left.rem } else { return $null }
@@ -181,6 +314,21 @@ function ParseTermChain {
     }, $right.rem)
 }
 
+# Parses an entire logic expression into a structured AST.
+#
+# Examples:
+# ```.
+# ParseExpression("location ~ RZ%").
+# ParseExpression("age >= 30 AND (name = 'Alice' OR NOT (city = 'Paris'))").
+# ````.
+#
+# Arguments:
+#   [String]$string - The input expression to parse.
+#
+# Returns:
+#   A structured `PSCustomObject` representing the parsed expression.
+#
+# Throws on any syntax errors.
 function ParseExpression {
     param ([String]$expr)
     [ParseResult]$evaluated = ParseTermChain $expr
@@ -195,29 +343,15 @@ function ParseExpression {
 # SECTION EVALUATION #
 ######################
 
-# Arguments:
-#   [Bool]$value - The value of the boolean
-# 
-# Returns:
-#   A PSCustomObject with `term_type` and `value`.
-#   - `value` holds the boolean
-function BoolTerm {
-    param ([Bool]$value)
-    return [PSCustomObject]@{
-        term_type = [Term]::Boolean
-        value = $value
-    }
-}
-
-# Checks if two term-nodes are equal
+# Checks if two term-nodes are equal.
 #
 # Arguments:
-#   [PSCustomObject]$term_a - The first term
-#   [PSCustomObject]$term_b - The second term
+#   [`PSCustomObject`]$term_a - The first term.
+#   [`PSCustomObject`]$term_b - The second term.
 #
 # Returns:
-#   $true if the terms are equal or both $null
-#   $false otherwise
+#   $true if the terms are equal or both $null.
+#   $false otherwise.
 function CompareTerms {
     param ([PSCustomObject]$term_a, [PSCustomObject]$term_b)
     if ($null -eq $term_a -and $null -eq $term_b) { return $true }
@@ -249,19 +383,19 @@ function CompareTerms {
     }
 }
 
-# Returns the logical inverse of a CmdbOperator
-# 
+# Returns the logical inverse of a CmdbOperator.
+#
 # These are all operators and their inverses:
-#   IsMatch      <>  IsNotMatch
-#   IsEqual      <>  IsNotEqual
-#   LessThan     <>  GreaterThanOrEqual
-#   GreaterThan  <>  LessThanOrEqual
+#   IsMatch      <>  IsNotMatch.
+#   IsEqual      <>  IsNotEqual.
+#   LessThan     <>  GreaterThanOrEqual.
+#   GreaterThan  <>  LessThanOrEqual.
 #
 # Arguments:
-#   [CmdbOperator]$operator - The input operator
+#   [CmdbOperator]$operator - The input operator.
 #
 # Returns:
-#   A CmdbOperator that is inverse to the input
+#   A CmdbOperator that is inverse to the input.
 function InvertOperator {
     param ([CmdbOperator]$operator)
     switch ($operator) {
@@ -276,14 +410,14 @@ function InvertOperator {
     }
 }
 
-# Returns the logical inverse of a CmdbCombine
-# Input `And` returns `Or` and vice-versa
+# Returns the logical inverse of a CmdbCombine.
+# Input `And` returns `Or` and vice-versa.
 #
 # Arguments:
-#   [CmdbCombine]$combine - The input combinator
+#   [CmdbCombine]$combine - The input combinator.
 #
 # Returns:
-#   A CmdbCombine that is inverse to the input
+#   A CmdbCombine that is inverse to the input.
 function InvertCombine {
     param ([CmdbCombine]$combine)
     switch ($combine) {
@@ -292,16 +426,16 @@ function InvertCombine {
     }
 }
 
-# Returns the logical inverse of a term
-# Uses `InvertCombine` and `InvertOperator` as helper functions
-# Uses `NormalizeAST` to return a simplified value
+# Returns the logical inverse of a term.
+# Uses `InvertCombine` and `InvertOperator` as helper functions.
+# Uses `NormalizeAST` to return a simplified value.
 #
 # Arguments:
-#   [PSCustomObject]$node - The input term
+#   [`PSCustomObject`]$node - The input term.
 #
 # Returns:
-#   A PSCustomObject with `term_type` and `value`
-#   The term is returned in normalized form
+#   A `PSCustomObject` with `term_type` and `value`.
+#   The term is returned in normalized form.
 function InvertTerm {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
@@ -338,17 +472,17 @@ function InvertTerm {
     }
 }
 
-# Converts a Combination term into a FlatCombination
+# Converts a Combination term into a FlatCombination.
 # If any of the child terms are compatible FlatCombinations,
 # they will also get desolved into the parent term.
 #
 # Arguments:
-#   [PSCustomObject[]]$terms - The children terms
-#   [CmdbCombine]$combine - The combinator of the combination
+#   [`PSCustomObject`[]]$terms - The children terms.
+#   [CmdbCombine]$combine - The combinator of the combination.
 #
 # Returns:
-#   A PSCustomObject with `term_type` and `value`
-#   This term is always a FlatCombination
+#   A `PSCustomObject` with `term_type` and `value`.
+#   This term is always a FlatCombination.
 function FlattenCombination {
     param ([PSCustomObject[]]$terms, [CmdbCombine]$combine)
     [PSCustomObject]$short_circuit = BoolTerm ($combine -eq [CmdbCombine]::Or)
@@ -380,17 +514,17 @@ function FlattenCombination {
     }
 }
 
-# Distributes a term into a flat combination-term
-# Also normalizes and flattens the terms
+# Distributes a term into a flat combination-term.
+# Also normalizes and flattens the terms.
 #
 # Arguments:
-#   [PSCustomObject]$term - The term that will get distributed
-#   [PSCustomObject]$into - The combination to distribute the term into
-#   [CmdbCombine]$combine - The combinator to join terms with
+#   [`PSCustomObject`]$term - The term that will get distributed.
+#   [`PSCustomObject`]$into - The combination to distribute the term into.
+#   [CmdbCombine]$combine - The combinator to join terms with.
 #
 # Returns:
-#   A PSCustomObject with `term_type` and `value`
-#   This term is always a FlatCombination
+#   A `PSCustomObject` with `term_type` and `value`.
+#   - This term is always a FlatCombination.
 function DistributeTerm {
     param ([PSCustomObject]$term, [PSCustomObject]$into, [CmdbCombine]$combine)
     return FlattenCombination -terms ($into.value.terms | ForEach-Object {
@@ -404,20 +538,20 @@ function DistributeTerm {
     }) -combine $into.value.combine
 }
 
-# Normalizes an entire logic-AST
-# Resolves all Inversions by applying DeMorgan's Law
-# Distributes And-combinations into child-Or-combinations
+# Normalizes an entire logic-AST.
+# Resolves all Inversions by applying DeMorgan's Law.
+# Distributes And-combinations into child-Or-combinations.
 # Flattens the tree into a single flat Or-Combination,
-# that contains only flat And-Combinations (DNF)
-# Eliminates redundant comparisons
-# Evaluates tautologies and oximora
+# that contains only flat And-Combinations (DNF).
+# Eliminates redundant comparisons.
+# Evaluates tautologies and oximora.
 #
 # Arguments:
-#   [PSCustomObject]$node - The AST root term
+#   [`PSCustomObject`]$node - The AST root term.
 #
 # Returns:
-#   A PSCustomObject with `term_type` and `value`
-#   The term is returned in disjunctive normal form
+#   A `PSCustomObject` with `term_type` and `value`.
+#   - The term is returned in disjunctive normal form.
 function NormalizeAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
@@ -435,7 +569,7 @@ function NormalizeAst {
             return FlattenCombination -terms @($left, $right) -combine $combine
         }
         ([Term]::Inversion)       { return InvertTerm $node.value }
-        ([Term]::FlatCombination) { return $node } # Already Normalized
+        ([Term]::FlatCombination) { return $node } # Already Normalized.
         ([Term]::Comparison)      { return $node }
         ([Term]::Boolean)         { return $node }
         ([Term]::Symbol)          { return $node }
@@ -447,13 +581,13 @@ function NormalizeAst {
 # SECTION INTERFACE #
 #####################
 
-# Converts a logical term into a readable string
+# Converts a logical term into a readable string.
 #
 # Arguments:
-#   [PSCustomObject]$node - The input term
+#   [`PSCustomObject`]$node - The input term.
 #
 # Returns:
-#   A String representing the term
+#   A String representing the term.
 function RenderAst {
     param ([PSCustomObject]$node)
     switch ($node.term_type) {
@@ -490,14 +624,14 @@ function RenderAst {
     }
 }
 
-# Parses and normalizes a logic expression
+# Parses and normalizes a logic expression.
 #
 # Arguments:
 #   [String]$expr - The input expression to parse.
 #
 # Returns:
-#   A PSCustomObject with `term_type` and `value`
-#   The term is returned in disjunctive normal form
+#   A `PSCustomObject` with `term_type` and `value`.
+#   - The term is returned in disjunctive normal form.
 function EvaluateExpression {
     param ([String]$expr)
     return NormalizeAst (ParseExpression $expr)
