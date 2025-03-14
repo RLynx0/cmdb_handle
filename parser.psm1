@@ -201,6 +201,14 @@ function BoolTerm {
     }
 }
 
+function InvTerm {
+    param ([PSCustomObject]$value)
+    return [PSCustomObject]@{
+        term_type = [TermType]::Inversion
+        value = $value
+    }
+}
+
 # Parsed a boolean expression (True or False).
 # 
 # Arguments:
@@ -276,21 +284,13 @@ function ParseInverseTerm {
     [ParseResult]$comp = ParseComparison $expr
     if ($comp) { throw "Expected Parentheses or Symbol after '$($inv.val)'" }
     [ParseResult]$inv = ParseInverseTerm $expr
-    if ($inv) { return [ParseResult]::New([PSCustomObject]@{
-        term_type = [TermType]::Inversion; value = $inv.val
-    }, $inv.rem) }
+    if ($inv) { return [ParseResult]::New((InvTerm $inv.val), $inv.rem) }
     [ParseResult]$group = ParseGroupedTerm $expr
-    if ($group) { return [ParseResult]::New([PSCustomObject]@{
-        term_type = [TermType]::Inversion; value = $group.val
-    }, $group.rem) }
+    if ($group) { return [ParseResult]::New((InvTerm $group.val), $group.rem) }
     [ParseResult]$bool = ParseBool $expr
-    if ($bool) { return [ParseResult]::New([PSCustomObject]@{
-        term_type = [TermType]::Inversion; value = $bool.val
-    }, $bool.rem) }
+    if ($bool) { return [ParseResult]::New((InvTerm $bool.val), $bool.rem) }
     [ParseResult]$symbol = ParseSymbol $expr
-    if ($symbol) { return [ParseResult]::New([PSCustomObject]@{
-        term_type = [TermType]::Inversion; value = $symbol.val
-    }, $symbol.rem) }
+    if ($symbol) { return [ParseResult]::New((InvTerm $symbol.val), $symbol.rem) }
     return $null
 }
 
@@ -515,9 +515,7 @@ function InvertTerm {
             -terms @($node.value.terms | ForEach-Object { InvertTerm $_ }) `
             -combine (InvertCombine $node.value.combine)
         }
-        ([TermType]::Symbol) {
-            return [PSCustomObject]@{ term_type = [TermType]::Inversion; value = $node }
-        }
+        ([TermType]::Symbol) { return InvTerm $node }
         ([TermType]::Boolean) { return BoolTerm (-not $node.value) }
         ([TermType]::Inversion) { return NormalizeAst $node.value }
     }
